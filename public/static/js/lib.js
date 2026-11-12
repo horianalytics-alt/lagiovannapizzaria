@@ -9,7 +9,10 @@ export const reais = (centavos) => (centavos / 100).toLocaleString('pt-BR', { st
 export const mesa2 = (numero) => String(numero).padStart(2, '0');
 export const hora = (texto) => (texto ? texto.slice(11, 16) : '');
 export const paraData = (texto) => new Date(texto.replace(' ', 'T'));
-export const minutosDesde = (texto) => Math.max(0, Math.floor((Date.now() - paraData(texto).getTime()) / 60000));
+// Diferença entre o relógio do servidor (horário da pizzaria) e o deste aparelho, atualizada a cada consulta.
+let desvioRelogio = 0;
+export const minutosDesde = (texto) =>
+  Math.max(0, Math.floor((Date.now() + desvioRelogio - paraData(texto).getTime()) / 60000));
 export const tempoDecorrido = (texto) => {
   const min = minutosDesde(texto);
   return min < 60 ? `${min} min` : `${Math.floor(min / 60)}h${String(min % 60).padStart(2, '0')}`;
@@ -58,27 +61,44 @@ export async function api(caminho, { metodo = 'GET', corpo, form } = {}) {
 
 // ---------- Tempo real ----------
 
+// O servidor mantém um contador por assunto (pedidos, mesas, cardápio, caixa). Cada tela consulta os
+// contadores a cada poucos segundos e recarrega só o que mudou. Com a aba escondida, não consulta nada.
+const INTERVALO_MS = window.DADOS?.usuario ? 3000 : 4000;
 const ouvintes = new Set();
-let fonte = null;
-let jaConectou = false;
+let versoes = null;
+let consultando = false;
+let vigiando = false;
 
-function conectarEventos() {
-  if (fonte) return;
-  fonte = new EventSource('/api/eventos');
-  fonte.onmessage = (evento) => ouvintes.forEach((ouvinte) => ouvinte(evento.data));
-  // Ao reconectar depois de uma queda, recarrega tudo: algum evento pode ter se perdido.
-  fonte.onopen = () => { if (jaConectou) ouvintes.forEach((o) => o('*')); jaConectou = true; };
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) ouvintes.forEach((o) => o('*'));
-  });
+async function consultarVersoes() {
+  if (document.hidden || consultando) return;
+  consultando = true;
+  try {
+    const resposta = await fetch('/api/versao', { cache: 'no-store' });
+    if (resposta.ok) {
+      const dados = await resposta.json();
+      desvioRelogio = paraData(dados.agora).getTime() - Date.now();
+      const mudaram = versoes ? Object.keys(dados.versoes).filter((t) => dados.versoes[t] !== versoes[t]) : [];
+      versoes = dados.versoes;
+      if (mudaram.length) ouvintes.forEach((ouvinte) => ouvinte(mudaram));
+    }
+  } catch { /* sem conexão agora; a próxima consulta compara os contadores e recupera o que mudou */ }
+  consultando = false;
+}
+
+function vigiarMudancas() {
+  if (vigiando) return;
+  vigiando = true;
+  consultarVersoes();
+  setInterval(consultarVersoes, INTERVALO_MS);
+  document.addEventListener('visibilitychange', consultarVersoes);
 }
 
 export function useEventos(tipos, acao) {
   const ref = useRef(acao);
   ref.current = acao;
   useEffect(() => {
-    conectarEventos();
-    const ouvinte = (tipo) => { if (tipo === '*' || tipos.includes(tipo)) ref.current(tipo); };
+    vigiarMudancas();
+    const ouvinte = (mudaram) => { if (mudaram.some((t) => tipos.includes(t))) ref.current(); };
     ouvintes.add(ouvinte);
     return () => ouvintes.delete(ouvinte);
   }, []);

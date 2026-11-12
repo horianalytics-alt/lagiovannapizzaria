@@ -141,7 +141,7 @@ function Garcom() {
     <//>
     ${!mesas.dados && html`<p class="carregando">${mesas.erro || 'Carregando as mesas…'}</p>`}
     ${mesas.dados && !mesa && html`<${Salao} mesas=${mesas.dados} aoAbrir=${setMesaId} />`}
-    ${mesa && !lancando && html`<${Mesa} mesaId=${mesa.id} aoVoltar=${() => setMesaId(null)} aoLancar=${() => setLancando(true)} />`}
+    ${mesa && !lancando && html`<${Mesa} mesaId=${mesa.id} aoVoltar=${() => { setMesaId(null); mesas.recarregar(); }} aoLancar=${() => setLancando(true)} />`}
     ${mesa && lancando && html`<${Lancar} mesaId=${mesa.id} numero=${mesa.numero}
       aoVoltar=${() => setLancando(false)} aoConcluir=${() => setLancando(false)} />`}
   </div>`;

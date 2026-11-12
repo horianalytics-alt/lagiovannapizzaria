@@ -11,10 +11,6 @@ const SECOES = [
 const TIPO_CATEGORIA = { pizza: 'Pizza (meio a meio e borda)', bebida: 'Bebida', outro: 'Outros' };
 const PERFIL = { admin: 'Gerente', garcom: 'Garçom', cozinha: 'Cozinha' };
 const FORMAS = ['pix', 'credito', 'debito', 'dinheiro'];
-const hoje = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-};
 
 // ---------- Peças de formulário ----------
 
@@ -35,6 +31,21 @@ function CampoDinheiro({ valor, aoMudar, id, rotulo }) {
       onInput=${(e) => { setTexto(e.target.value); aoMudar(paraCentavos(e.target.value)); }}
       onBlur=${() => setTexto(centavosParaTexto(valor))} onFocus=${(e) => e.target.select()} />
   </span>`;
+}
+
+/** Reduz a foto no próprio navegador (até 900 px, JPEG) para o cardápio abrir rápido no celular. */
+async function reduzirFoto(arquivo) {
+  const imagem = await createImageBitmap(arquivo).catch(() => null);
+  if (!imagem) throw new Error('Não consegui abrir essa imagem. Use JPG, PNG ou WebP.');
+  const escala = Math.min(1, 900 / Math.max(imagem.width, imagem.height));
+  const tela = document.createElement('canvas');
+  tela.width = Math.round(imagem.width * escala);
+  tela.height = Math.round(imagem.height * escala);
+  const pincel = tela.getContext('2d');
+  pincel.fillStyle = '#fff';
+  pincel.fillRect(0, 0, tela.width, tela.height);
+  pincel.drawImage(imagem, 0, 0, tela.width, tela.height);
+  return new Promise((resolver) => tela.toBlob(resolver, 'image/jpeg', 0.85));
 }
 
 async function executar(acao, mensagem) {
@@ -89,9 +100,14 @@ function Ranking({ titulo, itens, formatar, vazio, posicoes = true }) {
 }
 
 function Resumo() {
-  const [dia, setDia] = useState(hoje());
-  const { dados, erro } = useDados(`/api/admin/indicadores?dia=${dia}`, ['pedidos', 'caixa']);
-  const ehHoje = dia === hoje();
+  // Sem dia escolhido, o servidor responde com "hoje" no horário da pizzaria.
+  const [dia, setDia] = useState('');
+  const { dados, erro, recarregar } = useDados(`/api/admin/indicadores${dia ? `?dia=${dia}` : ''}`, ['pedidos', 'caixa']);
+  const ehHoje = !dados || dados.dia === dados.hoje;
+  const zerar = async () => {
+    if (!confirm('Apagar TODAS as vendas (pedidos, contas e pagamentos) e liberar as mesas?\n\nO cardápio, as mesas e a equipe continuam. Isso não pode ser desfeito.')) return;
+    if (await executar(() => api('/api/admin/zerar-vendas', { metodo: 'POST', corpo: { confirmacao: 'ZERAR' } }), 'Vendas zeradas. Tudo pronto para começar.')) recarregar();
+  };
   const qtd = (n) => n.toLocaleString('pt-BR', { maximumFractionDigits: 1 });
   const diaCurto = (iso) => new Date(iso + 'T12:00').toLocaleDateString('pt-BR', { weekday: 'short', day: 'numeric' }).replace('.', '');
 
@@ -99,7 +115,8 @@ function Resumo() {
     <header class="secao-topo">
       <h1>${ehHoje ? 'Resumo de hoje' : 'Resumo do dia'}</h1>
       <label class="seletor-dia">Dia
-        <input type="date" class="campo" value=${dia} max=${hoje()} onChange=${(e) => e.target.value && setDia(e.target.value)} />
+        <input type="date" class="campo" value=${dia || dados?.dia || ''} max=${dados?.hoje}
+          onChange=${(e) => e.target.value && setDia(e.target.value === dados?.hoje ? '' : e.target.value)} />
       </label>
     </header>
     ${!dados && html`<p class="carregando">${erro || 'Somando as vendas…'}</p>`}
@@ -122,7 +139,9 @@ function Resumo() {
         <${Ranking} titulo="Formas de pagamento" posicoes=${false} formatar=${reais} vazio="Nenhuma conta fechada neste dia."
           itens=${dados.pagamentos.filter((p) => p.valor > 0).sort((a, b) => b.valor - a.valor)
             .map((p) => ({ rotulo: ROTULO_PAGAMENTO[p.forma], valor: p.valor }))} />
-      </div>`}
+      </div>
+      <p class="zerar">Os números acima incluem as vendas de demonstração que vieram com o sistema.
+        <button class="link" onClick=${zerar}>Zerar as vendas para começar de verdade</button></p>`}
   </div>`;
 }
 
@@ -263,7 +282,7 @@ function Caixa() {
         </button>`)}
       </nav>
       ${selecionada
-        ? html`<${Conta} key=${selecionada.id} mesaId=${selecionada.id} aoFechar=${() => setMesaId(null)} />`
+        ? html`<${Conta} key=${selecionada.id} mesaId=${selecionada.id} aoFechar=${() => { setMesaId(null); mesas.recarregar(); contas.recarregar(); }} />`
         : html`<section class="conta conta-vazia"><p>Escolha uma mesa para ver o consumo e fechar a conta.</p></section>`}
     </div>
 
@@ -295,10 +314,10 @@ function FormularioProduto({ produto, categorias, aoSalvar, aoFechar }) {
   const enviarFoto = async (e) => {
     const arquivo = e.target.files[0];
     if (!arquivo) return;
-    const form = new FormData();
-    form.append('imagem', arquivo);
     setEnviando(true);
     try {
+      const form = new FormData();
+      form.append('imagem', await reduzirFoto(arquivo), 'foto.jpg');
       const { url } = await api('/api/admin/upload', { metodo: 'POST', form });
       setF((atual) => ({ ...atual, imagem: url }));
     } catch (erro) { avisar(erro.message, 'erro'); }

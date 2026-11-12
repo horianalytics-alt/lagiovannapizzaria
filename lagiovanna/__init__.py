@@ -1,47 +1,58 @@
 import os
-import secrets
 import time
 from datetime import timedelta
 from pathlib import Path
 
 from flask import Flask, jsonify, request
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from . import admin, auth, rotas, seed
-from .db import conectar, criar_tabelas, fechar_db
+from .db import abrir, chave_secreta, criar_tabelas, fechar_db
 from .servicos import Erro
 
 RAIZ = Path(__file__).resolve().parent.parent
 
 
-def _chave_secreta(pasta):
-    arquivo = pasta / "secret.key"
-    if not arquivo.exists():
-        arquivo.write_text(secrets.token_hex(32))
-    return arquivo.read_text().strip()
-
-
-def create_app(pasta_dados=None):
+def banco_configurado(pasta_dados=None, url_banco=None):
+    """Postgres quando há DATABASE_URL (nuvem); senão, um arquivo SQLite na pasta de dados."""
+    url = url_banco or os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL")
+    if url:
+        return ("postgres", url)
     pasta = Path(pasta_dados or os.environ.get("LAGIOVANNA_DADOS") or RAIZ / "dados")
-    uploads = pasta / "uploads"
-    uploads.mkdir(parents=True, exist_ok=True)
+    pasta.mkdir(parents=True, exist_ok=True)
+    return ("sqlite", str(pasta / "lagiovanna.db"))
 
-    app = Flask(__name__, template_folder=str(RAIZ / "templates"), static_folder=str(RAIZ / "static"))
+
+def create_app(pasta_dados=None, url_banco=None):
+    banco = banco_configurado(pasta_dados, url_banco)
+    na_nuvem = bool(os.environ.get("VERCEL"))
+
+    # Os arquivos estáticos ficam em public/static: na Vercel a CDN os entrega direto, sem passar pelo Python.
+    app = Flask(
+        __name__, template_folder=str(RAIZ / "templates"), static_folder=str(RAIZ / "public" / "static"),
+        static_url_path="/static",
+    )
+
+    db = abrir(*banco)
+    criar_tabelas(db)
+    seed.popular_se_vazio(db)
+    segredo = chave_secreta(db)
+    db.close()
+
     app.config.update(
-        BANCO=str(pasta / "lagiovanna.db"),
-        PASTA_UPLOADS=str(uploads),
-        SECRET_KEY=_chave_secreta(pasta),
+        BANCO=banco,
+        SECRET_KEY=segredo,
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SECURE=na_nuvem,
+        SESSION_REFRESH_EACH_REQUEST=False,
         PERMANENT_SESSION_LIFETIME=timedelta(hours=16),
-        MAX_CONTENT_LENGTH=6 * 1024 * 1024,
-        VERSAO=str(int(time.time())),
+        MAX_CONTENT_LENGTH=4 * 1024 * 1024,
+        VERSAO=(os.environ.get("VERCEL_GIT_COMMIT_SHA") or str(int(time.time())))[:10],
     )
     app.json.ensure_ascii = False
-
-    con = conectar(app.config["BANCO"])
-    criar_tabelas(con)
-    seed.popular_se_vazio(con)
-    con.close()
+    if na_nuvem:
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
     app.teardown_appcontext(fechar_db)
     app.before_request(auth.carregar_usuario)
@@ -60,7 +71,7 @@ def create_app(pasta_dados=None):
 
     @app.errorhandler(413)
     def _arquivo_grande(_erro):
-        return jsonify(erro="A imagem é grande demais. Use um arquivo de até 5 MB."), 413
+        return jsonify(erro="A imagem é grande demais. Use um arquivo de até 4 MB."), 413
 
     @app.errorhandler(404)
     def _nao_encontrado(erro):
@@ -72,7 +83,7 @@ def create_app(pasta_dados=None):
     def _cabecalhos(resposta):
         resposta.headers.setdefault("X-Content-Type-Options", "nosniff")
         resposta.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
-        if request.path.startswith("/api/") and resposta.mimetype == "application/json":
+        if request.path.startswith("/api/") and "Cache-Control" not in resposta.headers:
             resposta.headers["Cache-Control"] = "no-store"
         return resposta
 

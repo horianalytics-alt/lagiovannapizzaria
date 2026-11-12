@@ -1,8 +1,8 @@
 """Regras de negócio: montagem de pedidos, comandas, fechamento de conta e indicadores."""
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
-from .db import agora
+from .db import agora, agora_dt, hoje
 
 FORMAS_PAGAMENTO = ("dinheiro", "pix", "credito", "debito")
 STATUS_PEDIDO = ("pendente", "preparo", "pronto", "entregue", "cancelado")
@@ -128,24 +128,25 @@ def criar_pedido(db, mesa, itens_req, origem, usuario_id=None):
     itens = montar_itens(db, itens_req)
     momento = agora()
     with db:
-        comanda = comanda_aberta(db, mesa["id"])
-        if comanda:
-            comanda_id = comanda["id"]
-        else:
-            comanda_id = db.execute(
-                "INSERT INTO comandas (mesa_id, aberta_em) VALUES (?, ?)", (mesa["id"], momento)
-            ).lastrowid
-        pedido_id = db.execute(
+        # Se dois celulares da mesma mesa pedirem juntos, só uma conta é aberta (índice único).
+        db.execute(
+            "INSERT INTO comandas (mesa_id, aberta_em) VALUES (?, ?) ON CONFLICT DO NOTHING", (mesa["id"], momento)
+        )
+        comanda_id = comanda_aberta(db, mesa["id"])["id"]
+        pedido_id = db.inserir(
             """INSERT INTO pedidos (comanda_id, mesa_id, origem, usuario_id, criado_em, atualizado_em)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (comanda_id, mesa["id"], origem, usuario_id, momento, momento),
-        ).lastrowid
+        )
         db.executemany(
             """INSERT INTO pedido_itens
                (pedido_id, produto_id, produto2_id, borda_id, descricao, detalhe, observacao, quantidade, preco_unit)
-               VALUES (:pedido_id, :produto_id, :produto2_id, :borda_id, :descricao, :detalhe, :observacao,
-                       :quantidade, :preco_unit)""",
-            [dict(item, pedido_id=pedido_id) for item in itens],
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                (pedido_id, i["produto_id"], i["produto2_id"], i["borda_id"], i["descricao"], i["detalhe"],
+                 i["observacao"], i["quantidade"], i["preco_unit"])
+                for i in itens
+            ],
         )
     return pedido_id
 
@@ -187,7 +188,7 @@ def pedidos_da_comanda(db, comanda_id):
 
 def pedidos_da_cozinha(db):
     """Fila da cozinha: tudo que está pendente ou em preparo, e os prontos da última meia hora."""
-    limite = (datetime.now() - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+    limite = (agora_dt() - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
     return _pedidos_com_itens(
         db,
         """p.status IN ('pendente', 'preparo') OR (p.status = 'pronto' AND p.atualizado_em >= ?)""",
@@ -228,15 +229,51 @@ def situacao_mesa(db, mesa):
     return dados
 
 
+def _consumo_das_contas_abertas(db):
+    return {
+        linha["comanda_id"]: linha["valor"]
+        for linha in db.execute(
+            """SELECT p.comanda_id, SUM(i.quantidade * i.preco_unit) AS valor
+               FROM pedido_itens i JOIN pedidos p ON p.id = i.pedido_id
+               JOIN comandas c ON c.id = p.comanda_id
+               WHERE c.status = 'aberta' AND p.status != 'cancelado' AND i.cancelado = 0
+               GROUP BY p.comanda_id"""
+        )
+    }
+
+
 def listar_mesas(db):
-    mesas = []
-    for mesa in db.execute("SELECT * FROM mesas WHERE ativo = 1 ORDER BY numero"):
-        dados = situacao_mesa(db, mesa)
-        pedidos = dados.pop("pedidos")
-        dados["pedidos_prontos"] = sum(1 for p in pedidos if p["status"] == "pronto")
-        dados["pedidos_em_andamento"] = sum(1 for p in pedidos if p["status"] in ("pendente", "preparo"))
-        mesas.append(dados)
-    return mesas
+    """Todas as mesas com situação e totais, em poucas consultas (o salão pede isto o tempo todo)."""
+    mesas = {
+        m["id"]: dict(
+            id=m["id"], numero=m["numero"], chamado=m["chamado"], chamado_em=m["chamado_em"],
+            status="aguardando" if m["chamado"] else "livre",
+            comanda_id=None, aberta_em=None, subtotal=0, pedidos_prontos=0, pedidos_em_andamento=0,
+        )
+        for m in db.execute("SELECT * FROM mesas WHERE ativo = 1 ORDER BY numero")
+    }
+    por_comanda = {}
+    for comanda in db.execute("SELECT id, mesa_id, aberta_em FROM comandas WHERE status = 'aberta'"):
+        mesa = mesas.get(comanda["mesa_id"])
+        if mesa:
+            mesa.update(comanda_id=comanda["id"], aberta_em=comanda["aberta_em"])
+            if not mesa["chamado"]:
+                mesa["status"] = "ocupada"
+            por_comanda[comanda["id"]] = mesa
+    for comanda_id, valor in _consumo_das_contas_abertas(db).items():
+        if comanda_id in por_comanda:
+            por_comanda[comanda_id]["subtotal"] = valor
+    for linha in db.execute(
+        """SELECT p.comanda_id, p.status, COUNT(*) AS total
+           FROM pedidos p JOIN comandas c ON c.id = p.comanda_id
+           WHERE c.status = 'aberta' AND p.status IN ('pendente', 'preparo', 'pronto')
+           GROUP BY p.comanda_id, p.status"""
+    ):
+        mesa = por_comanda.get(linha["comanda_id"])
+        if mesa:
+            campo = "pedidos_prontos" if linha["status"] == "pronto" else "pedidos_em_andamento"
+            mesa[campo] += linha["total"]
+    return list(mesas.values())
 
 
 def mudar_status_pedido(db, pedido_id, novo_status, perfil):
@@ -330,55 +367,66 @@ def fechar_conta(db, mesa, desconto, taxa_pct, pagamentos, usuario_id):
     return dict(comanda_id=comanda["id"], subtotal=subtotal, desconto=desconto, taxa_servico=taxa, total=total)
 
 
-def contas_fechadas(db, dia):
-    contas = []
-    for linha in db.execute(
-        """SELECT c.id, m.numero AS mesa, c.aberta_em, c.fechada_em, c.subtotal, c.desconto,
-                  c.taxa_servico, c.total, u.nome AS fechada_por
-           FROM comandas c JOIN mesas m ON m.id = c.mesa_id
-           LEFT JOIN usuarios u ON u.id = c.fechada_por
-           WHERE c.status = 'fechada' AND date(c.fechada_em) = ? ORDER BY c.fechada_em DESC""",
-        (dia,),
+def _intervalo_do_dia(dia):
+    """Início e fim do dia como texto, para filtrar pelas datas usando os índices."""
+    try:
+        referencia = date.fromisoformat(dia)
+    except (TypeError, ValueError):
+        raise Erro("Data inválida.")
+    return referencia, f"{referencia} 00:00:00", f"{referencia + timedelta(days=1)} 00:00:00"
+
+
+def contas_fechadas(db, dia=None):
+    _, inicio, fim = _intervalo_do_dia(dia or hoje().isoformat())
+    contas = [
+        dict(linha, pagamentos=[])
+        for linha in db.execute(
+            """SELECT c.id, m.numero AS mesa, c.aberta_em, c.fechada_em, c.subtotal, c.desconto,
+                      c.taxa_servico, c.total, u.nome AS fechada_por
+               FROM comandas c JOIN mesas m ON m.id = c.mesa_id
+               LEFT JOIN usuarios u ON u.id = c.fechada_por
+               WHERE c.status = 'fechada' AND c.fechada_em >= ? AND c.fechada_em < ?
+               ORDER BY c.fechada_em DESC, c.id DESC""",
+            (inicio, fim),
+        )
+    ]
+    por_id = {conta["id"]: conta for conta in contas}
+    for pagamento in db.execute(
+        """SELECT pg.comanda_id, pg.forma, pg.valor FROM pagamentos pg JOIN comandas c ON c.id = pg.comanda_id
+           WHERE c.status = 'fechada' AND c.fechada_em >= ? AND c.fechada_em < ? ORDER BY pg.id""",
+        (inicio, fim),
     ):
-        conta = dict(linha)
-        conta["pagamentos"] = [
-            dict(p)
-            for p in db.execute("SELECT forma, valor FROM pagamentos WHERE comanda_id = ?", (conta["id"],))
-        ]
-        contas.append(conta)
+        por_id[pagamento["comanda_id"]]["pagamentos"].append(dict(forma=pagamento["forma"], valor=pagamento["valor"]))
     return contas
 
 
 def indicadores(db, dia=None):
-    dia = dia or date.today().isoformat()
-    try:
-        referencia = date.fromisoformat(dia)
-    except ValueError:
-        raise Erro("Data inválida.")
+    dia_atual = hoje()
+    referencia, inicio, fim = _intervalo_do_dia(dia or dia_atual.isoformat())
+    dia = referencia.isoformat()
 
     faturamento, contas = db.execute(
         """SELECT COALESCE(SUM(total), 0), COUNT(*) FROM comandas
-           WHERE status = 'fechada' AND date(fechada_em) = ?""",
-        (dia,),
+           WHERE status = 'fechada' AND fechada_em >= ? AND fechada_em < ?""",
+        (inicio, fim),
     ).fetchone()
     pedidos = db.execute(
-        "SELECT COUNT(*) FROM pedidos WHERE date(criado_em) = ? AND status != 'cancelado'", (dia,)
+        "SELECT COUNT(*) FROM pedidos WHERE criado_em >= ? AND criado_em < ? AND status != 'cancelado'", (inicio, fim)
     ).fetchone()[0]
 
     em_aberto = mesas_abertas = 0
-    if referencia == date.today():
-        for comanda in db.execute("SELECT id FROM comandas WHERE status = 'aberta'"):
-            em_aberto += subtotal_comanda(db, comanda["id"])
-            mesas_abertas += 1
+    if referencia == dia_atual:
+        mesas_abertas = db.execute("SELECT COUNT(*) FROM comandas WHERE status = 'aberta'").fetchone()[0]
+        em_aberto = sum(_consumo_das_contas_abertas(db).values())
 
     por_hora = defaultdict(int)
     for linha in db.execute(
-        """SELECT CAST(strftime('%H', p.criado_em) AS INTEGER) AS hora,
+        """SELECT CAST(substr(p.criado_em, 12, 2) AS INTEGER) AS hora,
                   SUM(i.quantidade * i.preco_unit) AS valor
            FROM pedido_itens i JOIN pedidos p ON p.id = i.pedido_id
-           WHERE date(p.criado_em) = ? AND p.status != 'cancelado' AND i.cancelado = 0
-           GROUP BY hora""",
-        (dia,),
+           WHERE p.criado_em >= ? AND p.criado_em < ? AND p.status != 'cancelado' AND i.cancelado = 0
+           GROUP BY 1""",
+        (inicio, fim),
     ):
         por_hora[linha["hora"]] = linha["valor"]
     if por_hora:
@@ -395,8 +443,9 @@ def indicadores(db, dia=None):
            JOIN produtos p1 ON p1.id = i.produto_id
            JOIN categorias c ON c.id = p1.categoria_id
            LEFT JOIN produtos p2 ON p2.id = i.produto2_id
-           WHERE date(p.criado_em) = ? AND p.status != 'cancelado' AND i.cancelado = 0 AND c.tipo = 'pizza'""",
-        (dia,),
+           WHERE p.criado_em >= ? AND p.criado_em < ? AND p.status != 'cancelado' AND i.cancelado = 0
+                 AND c.tipo = 'pizza'""",
+        (inicio, fim),
     ):
         if linha["sabor2"]:
             quantidades[linha["sabor1"]] += linha["quantidade"] / 2
@@ -410,27 +459,25 @@ def indicadores(db, dia=None):
         for linha in db.execute(
             """SELECT pg.forma, SUM(pg.valor) AS valor FROM pagamentos pg
                JOIN comandas c ON c.id = pg.comanda_id
-               WHERE c.status = 'fechada' AND date(c.fechada_em) = ? GROUP BY pg.forma""",
-            (dia,),
+               WHERE c.status = 'fechada' AND c.fechada_em >= ? AND c.fechada_em < ? GROUP BY pg.forma""",
+            (inicio, fim),
         )
     }
 
-    inicio = referencia - timedelta(days=6)
+    primeiro = referencia - timedelta(days=6)
     por_dia = {
         linha["dia"]: linha["valor"]
         for linha in db.execute(
-            """SELECT date(fechada_em) AS dia, SUM(total) AS valor FROM comandas
-               WHERE status = 'fechada' AND date(fechada_em) BETWEEN ? AND ? GROUP BY dia""",
-            (inicio.isoformat(), dia),
+            """SELECT substr(fechada_em, 1, 10) AS dia, SUM(total) AS valor FROM comandas
+               WHERE status = 'fechada' AND fechada_em >= ? AND fechada_em < ? GROUP BY 1""",
+            (f"{primeiro} 00:00:00", fim),
         )
     }
-    ultimos_dias = [
-        dict(dia=(inicio + timedelta(days=n)).isoformat(), valor=por_dia.get((inicio + timedelta(days=n)).isoformat(), 0))
-        for n in range(7)
-    ]
+    dias = [(primeiro + timedelta(days=n)).isoformat() for n in range(7)]
 
     return dict(
         dia=dia,
+        hoje=dia_atual.isoformat(),
         faturamento=faturamento,
         contas_fechadas=contas,
         ticket_medio=round(faturamento / contas) if contas else 0,
@@ -440,5 +487,13 @@ def indicadores(db, dia=None):
         vendas_por_hora=vendas_por_hora,
         ranking_pizzas=[dict(nome=nome, quantidade=qtd) for nome, qtd in ranking],
         pagamentos=[dict(forma=f, valor=pagamentos.get(f, 0)) for f in FORMAS_PAGAMENTO],
-        ultimos_dias=ultimos_dias,
+        ultimos_dias=[dict(dia=d, valor=por_dia.get(d, 0)) for d in dias],
     )
+
+
+def zerar_movimento(db):
+    """Apaga todas as vendas (pedidos, contas e pagamentos) e libera as mesas. Cardápio e equipe ficam."""
+    with db:
+        for tabela in ("pagamentos", "pedido_itens", "pedidos", "comandas"):
+            db.execute(f"DELETE FROM {tabela}")
+        db.execute("UPDATE mesas SET chamado = NULL, chamado_em = NULL")

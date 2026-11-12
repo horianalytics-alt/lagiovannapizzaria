@@ -1,12 +1,10 @@
 """Páginas e API usadas por cliente, garçom e cozinha."""
-from flask import (
-    Blueprint, Response, current_app, g, jsonify, redirect, render_template, request, send_from_directory, session,
-)
+from flask import Blueprint, Response, abort, g, jsonify, redirect, render_template, request, session
 
 from . import servicos
 from .auth import INICIO_POR_PERFIL, exige, pagina_exige
 from .db import agora, get_db
-from .eventos import canal, fluxo_sse
+from .eventos import publicar, versoes
 
 paginas = Blueprint("paginas", __name__)
 api = Blueprint("api", __name__, url_prefix="/api")
@@ -60,7 +58,13 @@ def admin():
 
 @paginas.get("/uploads/<path:nome>")
 def upload(nome):
-    return send_from_directory(current_app.config["PASTA_UPLOADS"], nome, max_age=86400)
+    imagem = get_db().execute("SELECT tipo, dados FROM imagens WHERE nome = ?", (nome,)).fetchone()
+    if not imagem:
+        abort(404)
+    resposta = Response(bytes(imagem["dados"]), mimetype=imagem["tipo"])
+    # O nome é único por arquivo, então navegador e CDN podem guardar para sempre.
+    resposta.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resposta
 
 
 def _dados_usuario():
@@ -79,7 +83,7 @@ def cardapio_publico(db):
     por_id = {c["id"]: c for c in categorias}
     for produto in db.execute(
         """SELECT id, categoria_id, nome, descricao, preco, imagem FROM produtos
-           WHERE ativo = 1 AND excluido = 0 ORDER BY nome COLLATE NOCASE"""
+           WHERE ativo = 1 AND excluido = 0 ORDER BY lower(nome)"""
     ):
         if produto["categoria_id"] in por_id:
             por_id[produto["categoria_id"]]["produtos"].append(dict(produto))
@@ -95,11 +99,15 @@ def cardapio():
     return jsonify(cardapio_publico(get_db()))
 
 
-@api.get("/eventos")
-def eventos():
-    resposta = Response(fluxo_sse(), mimetype="text/event-stream")
-    resposta.headers["Cache-Control"] = "no-cache"
-    resposta.headers["X-Accel-Buffering"] = "no"
+@api.get("/versao")
+def versao():
+    """Contadores de mudança que as telas consultam a cada poucos segundos.
+
+    A resposta é igual para todo mundo e não usa sessão; assim a CDN pode guardá-la por 2 segundos e
+    várias telas abertas custam uma única consulta ao banco.
+    """
+    resposta = jsonify(versoes=versoes(get_db()), agora=agora())
+    resposta.headers["Cache-Control"] = "public, max-age=0, s-maxage=2"
     return resposta
 
 
@@ -115,7 +123,7 @@ def pedido_cliente(numero):
     dados = request.get_json(silent=True) or {}
     mesa = servicos.mesa_por_numero(db, numero)
     pedido_id = servicos.criar_pedido(db, mesa, dados.get("itens"), "cliente")
-    canal.publicar("pedidos")
+    publicar("pedidos")
     return jsonify(pedido_id=pedido_id), 201
 
 
@@ -128,7 +136,7 @@ def chamar(numero):
     mesa = servicos.mesa_por_numero(db, numero)
     with db:
         db.execute("UPDATE mesas SET chamado = ?, chamado_em = ? WHERE id = ?", (tipo, agora(), mesa["id"]))
-    canal.publicar("mesas")
+    publicar("mesas")
     return jsonify(ok=True)
 
 
@@ -154,7 +162,7 @@ def pedido_garcom(mesa_id):
     dados = request.get_json(silent=True) or {}
     mesa = servicos.mesa_por_id(db, mesa_id)
     pedido_id = servicos.criar_pedido(db, mesa, dados.get("itens"), "garcom", g.usuario["id"])
-    canal.publicar("pedidos")
+    publicar("pedidos")
     return jsonify(pedido_id=pedido_id), 201
 
 
@@ -165,7 +173,7 @@ def atender(mesa_id):
     mesa = servicos.mesa_por_id(db, mesa_id)
     with db:
         db.execute("UPDATE mesas SET chamado = NULL, chamado_em = NULL WHERE id = ?", (mesa["id"],))
-    canal.publicar("mesas")
+    publicar("mesas")
     return jsonify(ok=True)
 
 
@@ -180,5 +188,5 @@ def fila_cozinha():
 def status_pedido(pedido_id):
     novo = (request.get_json(silent=True) or {}).get("status")
     servicos.mudar_status_pedido(get_db(), pedido_id, novo, g.usuario["perfil"])
-    canal.publicar("pedidos")
+    publicar("pedidos")
     return jsonify(ok=True)

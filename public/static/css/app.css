@@ -660,3 +660,5 @@ li.cancelado .item-nome, li.cancelado .num { text-decoration: line-through; colo
 }
 
 .barra-pedido .botao { white-space: nowrap; padding: 0 14px; }
+
+.zerar { margin-top: 40px; padding-top: 14px; border-top: 1px solid var(--linha); color: var(--cinza); font-size: .93rem; }

@@ -1,8 +1,10 @@
 """Dados iniciais: equipe, cardápio, mesas e um movimento fictício para o painel abrir com números."""
 import random
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from werkzeug.security import generate_password_hash
+
+from .db import agora_dt
 
 USUARIOS = [
     ("Giovanna (gerente)", "admin", "giovanna123", "admin"),
@@ -67,37 +69,38 @@ TOTAL_MESAS = 12
 OBSERVACOES = ["Sem cebola", "Bem assada", "Sem azeitona", "Cortar em 12 fatias", "Pouco orégano"]
 
 
-def popular_se_vazio(con):
+def popular_se_vazio(con, semente=7):
     if con.execute("SELECT COUNT(*) FROM usuarios").fetchone()[0]:
         return False
-    popular(con)
-    return True
-
-
-def popular(con, semente=7):
     sorteio = random.Random(semente)
     with con:
+        if con.postgres:
+            # Duas instâncias podem acordar juntas; a trava garante que só uma popula o banco.
+            con.execute("SELECT pg_advisory_xact_lock(741202)")
+            if con.execute("SELECT COUNT(*) FROM usuarios").fetchone()[0]:
+                return False
         con.executemany(
             "INSERT INTO usuarios (nome, usuario, senha_hash, perfil) VALUES (?, ?, ?, ?)",
             [(nome, usuario, generate_password_hash(senha), perfil) for nome, usuario, senha, perfil in USUARIOS],
         )
         pizzas, bebidas, outros = [], [], []
         for ordem, (categoria, tipo, produtos) in enumerate(CARDAPIO, start=1):
-            categoria_id = con.execute(
+            categoria_id = con.inserir(
                 "INSERT INTO categorias (nome, tipo, ordem) VALUES (?, ?, ?)", (categoria, tipo, ordem)
-            ).lastrowid
+            )
             for nome, descricao, preco, foto in produtos:
-                produto_id = con.execute(
+                produto_id = con.inserir(
                     "INSERT INTO produtos (categoria_id, nome, descricao, preco, imagem) VALUES (?, ?, ?, ?, ?)",
                     (categoria_id, nome, descricao, preco, FOTO + foto if foto else None),
-                ).lastrowid
+                )
                 {"pizza": pizzas, "bebida": bebidas, "outro": outros}[tipo].append((produto_id, nome, preco))
         bordas = [
-            (con.execute("INSERT INTO bordas (nome, preco) VALUES (?, ?)", (nome, preco)).lastrowid, nome, preco)
+            (con.inserir("INSERT INTO bordas (nome, preco) VALUES (?, ?)", (nome, preco)), nome, preco)
             for nome, preco in BORDAS
         ]
         con.executemany("INSERT INTO mesas (numero) VALUES (?)", [(n,) for n in range(1, TOTAL_MESAS + 1)])
         _movimento(con, sorteio, pizzas, bebidas, outros, bordas)
+    return True
 
 
 def _fmt(momento):
@@ -132,11 +135,11 @@ def _itens_sorteados(sorteio, pizzas, bebidas, outros, bordas):
 
 
 def _inserir_pedido(con, comanda_id, mesa_id, status, momento, itens, origem, usuario_id):
-    pedido_id = con.execute(
+    pedido_id = con.inserir(
         """INSERT INTO pedidos (comanda_id, mesa_id, origem, usuario_id, status, criado_em, atualizado_em)
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (comanda_id, mesa_id, origem, usuario_id, status, _fmt(momento), _fmt(momento)),
-    ).lastrowid
+    )
     con.executemany(
         """INSERT INTO pedido_itens
            (pedido_id, produto_id, produto2_id, borda_id, descricao, detalhe, observacao, quantidade, preco_unit)
@@ -148,9 +151,9 @@ def _inserir_pedido(con, comanda_id, mesa_id, status, momento, itens, origem, us
 
 def _conta_fechada(con, sorteio, catalogo, abertura, admin_id, garcom_id):
     mesa_id = sorteio.randint(1, TOTAL_MESAS)
-    comanda_id = con.execute(
+    comanda_id = con.inserir(
         "INSERT INTO comandas (mesa_id, status, aberta_em) VALUES (?, 'fechada', ?)", (mesa_id, _fmt(abertura))
-    ).lastrowid
+    )
     origem = sorteio.choice(["cliente", "cliente", "garcom"])
     subtotal = _inserir_pedido(
         con, comanda_id, mesa_id, "entregue", abertura, _itens_sorteados(sorteio, *catalogo),
@@ -173,7 +176,7 @@ def _conta_fechada(con, sorteio, catalogo, abertura, admin_id, garcom_id):
 def _movimento(con, sorteio, pizzas, bebidas, outros, bordas):
     catalogo = (pizzas, bebidas, outros, bordas)
     admin_id, garcom_id = 1, 2
-    agora = datetime.now().replace(microsecond=0)
+    agora = agora_dt()
 
     # Seis dias anteriores, com o salão aberto das 18h às 23h.
     for dias in range(6, 0, -1):
@@ -194,8 +197,8 @@ def _movimento(con, sorteio, pizzas, bebidas, outros, bordas):
     abertas = [(3, "entregue", 48), (7, "pronto", 21), (5, "preparo", 12), (9, "pendente", 4)]
     for mesa_id, status, minutos in abertas:
         momento = max(inicio_do_dia, agora - timedelta(minutes=minutos))
-        comanda_id = con.execute(
+        comanda_id = con.inserir(
             "INSERT INTO comandas (mesa_id, aberta_em) VALUES (?, ?)", (mesa_id, _fmt(momento))
-        ).lastrowid
+        )
         _inserir_pedido(con, comanda_id, mesa_id, status, momento, _itens_sorteados(sorteio, *catalogo), "cliente", None)
     con.execute("UPDATE mesas SET chamado = 'conta', chamado_em = ? WHERE id = 3", (_fmt(agora - timedelta(minutes=2)),))

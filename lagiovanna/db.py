@@ -1,7 +1,18 @@
+"""Acesso ao banco. Funciona igual em SQLite (arquivo local) e Postgres (nuvem, via DATABASE_URL)."""
+import os
+import secrets
 import sqlite3
+import threading
+import time
 from datetime import datetime
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from zoneinfo import ZoneInfo
 
 from flask import current_app, g
+
+# Servidores na nuvem rodam em UTC; a pizzaria vive no horário de Brasília.
+FUSO = ZoneInfo(os.environ.get("FUSO_HORARIO", "America/Sao_Paulo"))
+TOPICOS = ("pedidos", "mesas", "cardapio", "caixa")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS usuarios (
@@ -65,6 +76,7 @@ CREATE TABLE IF NOT EXISTS pagamentos (
     forma TEXT NOT NULL CHECK (forma IN ('dinheiro', 'pix', 'credito', 'debito')),
     valor INTEGER NOT NULL CHECK (valor > 0)
 );
+CREATE INDEX IF NOT EXISTS ix_pagamentos_comanda ON pagamentos(comanda_id);
 CREATE TABLE IF NOT EXISTS pedidos (
     id INTEGER PRIMARY KEY,
     comanda_id INTEGER NOT NULL REFERENCES comandas(id),
@@ -78,6 +90,7 @@ CREATE TABLE IF NOT EXISTS pedidos (
 );
 CREATE INDEX IF NOT EXISTS ix_pedidos_comanda ON pedidos(comanda_id);
 CREATE INDEX IF NOT EXISTS ix_pedidos_criado_em ON pedidos(criado_em);
+CREATE INDEX IF NOT EXISTS ix_pedidos_status ON pedidos(status);
 CREATE TABLE IF NOT EXISTS pedido_itens (
     id INTEGER PRIMARY KEY,
     pedido_id INTEGER NOT NULL REFERENCES pedidos(id),
@@ -96,33 +109,205 @@ CREATE TABLE IF NOT EXISTS config (
     chave TEXT PRIMARY KEY,
     valor TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS imagens (
+    nome TEXT PRIMARY KEY,
+    tipo TEXT NOT NULL,
+    dados BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS versoes (
+    topico TEXT PRIMARY KEY,
+    numero INTEGER NOT NULL DEFAULT 0
+)
 """
 
 
+def agora_dt():
+    return datetime.now(FUSO).replace(tzinfo=None, microsecond=0)
+
+
 def agora():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return agora_dt().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def conectar(caminho):
-    con = sqlite3.connect(caminho, timeout=15)
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA foreign_keys = ON")
-    con.execute("PRAGMA journal_mode = WAL")
+def hoje():
+    return agora_dt().date()
+
+
+class Linha:
+    """Linha do Postgres com o mesmo jeito de usar do sqlite3.Row: por nome, por posição e dict(linha)."""
+
+    __slots__ = ("_indices", "_valores")
+
+    def __init__(self, indices, valores):
+        self._indices = indices
+        self._valores = valores
+
+    def __getitem__(self, chave):
+        return self._valores[chave if isinstance(chave, int) else self._indices[chave]]
+
+    def keys(self):
+        return list(self._indices)
+
+    def __iter__(self):
+        return iter(self._valores)
+
+    def __len__(self):
+        return len(self._valores)
+
+
+def _fabrica_de_linhas(cursor):
+    indices = {coluna.name: i for i, coluna in enumerate(cursor.description or ())}
+    return lambda valores: Linha(indices, valores)
+
+
+class Banco:
+    """Interface única sobre sqlite3 e psycopg. O SQL do sistema usa `?` e só recursos comuns aos dois."""
+
+    def __init__(self, con, postgres):
+        self.con = con
+        self.postgres = postgres
+        self._transacao = None
+
+    def _sql(self, sql):
+        return sql.replace("?", "%s") if self.postgres else sql
+
+    def execute(self, sql, parametros=()):
+        return self.con.execute(self._sql(sql), parametros)
+
+    def executemany(self, sql, linhas):
+        if self.postgres:
+            with self.con.cursor() as cursor:
+                cursor.executemany(self._sql(sql), linhas)
+        else:
+            self.con.executemany(sql, linhas)
+
+    def inserir(self, sql, parametros=()):
+        """Executa um INSERT e devolve o id gerado."""
+        if self.postgres:
+            return self.con.execute(self._sql(sql) + " RETURNING id", parametros).fetchone()[0]
+        return self.con.execute(sql, parametros).lastrowid
+
+    def __enter__(self):
+        if self.postgres:
+            self._transacao = self.con.transaction()
+            self._transacao.__enter__()
+        else:
+            self.con.__enter__()
+        return self
+
+    def __exit__(self, *erro):
+        if self.postgres:
+            transacao, self._transacao = self._transacao, None
+            return transacao.__exit__(*erro)
+        return self.con.__exit__(*erro)
+
+    def close(self):
+        if not self.postgres:
+            self.con.close()
+
+
+# ---------- Conexões ----------
+
+_PARAMETROS_ACEITOS = {"sslmode", "channel_binding", "connect_timeout", "options", "application_name", "sslrootcert"}
+_da_thread = threading.local()
+_OCIOSA_SEGUNDOS = 20
+
+
+def _limpar_url(url):
+    """Tira da URL parâmetros que alguns provedores acrescentam e o driver não conhece."""
+    partes = urlsplit(url)
+    consulta = [(k, v) for k, v in parse_qsl(partes.query) if k in _PARAMETROS_ACEITOS]
+    return urlunsplit(partes._replace(query=urlencode(consulta)))
+
+
+def _conectar_postgres(url):
+    import psycopg
+
+    # prepare_threshold=None: conexões "pooled" (PgBouncer) não aceitam prepared statements.
+    return psycopg.connect(
+        _limpar_url(url), autocommit=True, prepare_threshold=None, row_factory=_fabrica_de_linhas, connect_timeout=10
+    )
+
+
+def _postgres_da_thread(url):
+    """Reaproveita a conexão entre requisições; depois de um tempo parada, confere se ainda está viva."""
+    con = getattr(_da_thread, "con", None)
+    momento = time.time()
+    if con is not None and not con.closed and not con.broken and _da_thread.url == url:
+        if momento - _da_thread.uso < _OCIOSA_SEGUNDOS:
+            _da_thread.uso = momento
+            return con
+        try:
+            con.execute("SELECT 1")
+            _da_thread.uso = momento
+            return con
+        except Exception:
+            pass
+    if con is not None:
+        try:
+            con.close()
+        except Exception:
+            pass
+    con = _conectar_postgres(url)
+    _da_thread.con, _da_thread.url, _da_thread.uso = con, url, momento
     return con
 
 
-def criar_tabelas(con):
-    con.executescript(SCHEMA)
-    con.commit()
+def abrir(tipo, alvo):
+    if tipo == "postgres":
+        return Banco(_postgres_da_thread(alvo), True)
+    con = sqlite3.connect(alvo, timeout=15)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA foreign_keys = ON")
+    con.execute("PRAGMA journal_mode = WAL")
+    return Banco(con, False)
 
 
 def get_db():
     if "db" not in g:
-        g.db = conectar(current_app.config["BANCO"])
+        g.db = abrir(*current_app.config["BANCO"])
     return g.db
 
 
-def fechar_db(_exc=None):
+def fechar_db(_erro=None):
     db = g.pop("db", None)
     if db is not None:
         db.close()
+
+
+# ---------- Preparação ----------
+
+def criar_tabelas(db):
+    if db.postgres:
+        if db.execute("SELECT to_regclass('versoes')").fetchone()[0] is None:
+            sql = SCHEMA.replace("id INTEGER PRIMARY KEY", "id SERIAL PRIMARY KEY").replace("BLOB", "BYTEA")
+            with db:
+                # Duas instâncias podem acordar ao mesmo tempo; a trava evita criarem as tabelas em paralelo.
+                db.execute("SELECT pg_advisory_xact_lock(741201)")
+                for comando in sql.split(";"):
+                    db.execute(comando)
+    else:
+        db.con.executescript(SCHEMA)
+    with db:
+        for topico in TOPICOS:
+            db.execute("INSERT INTO versoes (topico) VALUES (?) ON CONFLICT DO NOTHING", (topico,))
+
+
+def chave_secreta(db):
+    """Chave das sessões: variável SECRET_KEY, ou uma gerada na primeira vez e guardada no banco."""
+    if os.environ.get("SECRET_KEY"):
+        return os.environ["SECRET_KEY"]
+    with db:
+        db.execute(
+            "INSERT INTO config (chave, valor) VALUES ('chave_secreta', ?) ON CONFLICT DO NOTHING",
+            (secrets.token_hex(32),),
+        )
+    return db.execute("SELECT valor FROM config WHERE chave = 'chave_secreta'").fetchone()[0]
+
+
+def apagar_tudo(db):
+    tabelas = ("pagamentos", "pedido_itens", "pedidos", "comandas", "produtos", "categorias", "bordas", "mesas",
+               "usuarios", "imagens", "versoes", "config")
+    with db:
+        for tabela in tabelas:
+            db.execute(f"DROP TABLE IF EXISTS {tabela}")

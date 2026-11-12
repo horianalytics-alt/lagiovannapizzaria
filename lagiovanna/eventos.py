@@ -1,46 +1,18 @@
-"""Canal de eventos em memória para as telas se atualizarem em tempo real (SSE)."""
-import queue
-import threading
+"""Avisos de mudança entre as telas.
+
+Cada assunto (pedidos, mesas, cardápio, caixa) tem um contador no banco. Quem muda algo soma um;
+as telas consultam os contadores a cada poucos segundos e recarregam só o que mudou. Funciona com
+qualquer número de instâncias do servidor, inclusive em hospedagem sem conexões longas.
+"""
+from .db import get_db
 
 
-class Canal:
-    def __init__(self):
-        self._assinantes = set()
-        self._trava = threading.Lock()
-
-    def assinar(self):
-        fila = queue.Queue(maxsize=200)
-        with self._trava:
-            self._assinantes.add(fila)
-        return fila
-
-    def cancelar(self, fila):
-        with self._trava:
-            self._assinantes.discard(fila)
-
-    def publicar(self, *tipos):
-        with self._trava:
-            assinantes = list(self._assinantes)
-        for fila in assinantes:
-            for tipo in tipos:
-                try:
-                    fila.put_nowait(tipo)
-                except queue.Full:
-                    pass
+def publicar(*topicos):
+    db = get_db()
+    marcas = ",".join("?" * len(topicos))
+    with db:
+        db.execute(f"UPDATE versoes SET numero = numero + 1 WHERE topico IN ({marcas})", topicos)
 
 
-canal = Canal()
-
-
-def fluxo_sse(intervalo_ping=15):
-    fila = canal.assinar()
-    try:
-        yield "retry: 2000\n\n"
-        while True:
-            try:
-                tipo = fila.get(timeout=intervalo_ping)
-                yield f"data: {tipo}\n\n"
-            except queue.Empty:
-                yield ": ping\n\n"
-    finally:
-        canal.cancelar(fila)
+def versoes(db):
+    return {linha["topico"]: linha["numero"] for linha in db.execute("SELECT topico, numero FROM versoes")}

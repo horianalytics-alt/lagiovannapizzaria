@@ -16,6 +16,9 @@ _tentativas = {}
 
 def carregar_usuario():
     g.usuario = None
+    # /api/versao não toca na sessão para poder ser guardada pela CDN.
+    if request.endpoint in ("api.versao", "static", "paginas.upload"):
+        return
     uid = session.get("uid")
     if uid is not None:
         g.usuario = get_db().execute(

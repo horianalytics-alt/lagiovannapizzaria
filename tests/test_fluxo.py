@@ -1,11 +1,19 @@
+import os
+
 import pytest
 
 from lagiovanna import create_app
+from lagiovanna.db import abrir, apagar_tudo
 
 
 @pytest.fixture()
 def app(tmp_path):
-    app = create_app(tmp_path)
+    """SQLite por padrão; com TESTE_POSTGRES_URL definido, roda os mesmos testes num Postgres (que é zerado)."""
+    url = os.environ.get("TESTE_POSTGRES_URL")
+    if url:
+        db = abrir("postgres", url)
+        apagar_tudo(db)
+    app = create_app(tmp_path, url_banco=url)
     app.config["TESTING"] = True
     return app
 
@@ -186,3 +194,33 @@ def test_painel_abre_com_dados_de_demonstracao(app):
     assert dados["faturamento"] > 0 and dados["contas_fechadas"] == 14 and dados["ranking_pizzas"]
     assert dados["mesas_abertas"] == 4 and len(dados["ultimos_dias"]) == 7
     assert all(d["valor"] > 0 for d in dados["ultimos_dias"])
+
+
+def test_versoes_avisam_as_telas_e_foto_fica_no_banco(app):
+    publico = app.test_client()
+    admin = entrar(app, "admin", "giovanna123")
+    resposta = publico.get("/api/versao")
+    assert "s-maxage=2" in resposta.headers["Cache-Control"] and "Set-Cookie" not in resposta.headers
+    antes = resposta.json["versoes"]
+    assert publico.post("/api/mesa/1/pedidos", json={"itens": [{"produto_id": 1, "quantidade": 1}]}).status_code == 201
+    depois = publico.get("/api/versao").json["versoes"]
+    assert depois["pedidos"] == antes["pedidos"] + 1 and depois["cardapio"] == antes["cardapio"]
+
+    import io
+    png = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+    envio = admin.post("/api/admin/upload", data={"imagem": (io.BytesIO(png), "foto.png")})
+    assert envio.status_code == 201
+    foto = publico.get(envio.json["url"])
+    assert foto.status_code == 200 and foto.data == png and foto.mimetype == "image/png"
+    assert "immutable" in foto.headers["Cache-Control"]
+    assert admin.post("/api/admin/upload", data={"imagem": (io.BytesIO(b"oi"), "foto.png")}).status_code == 400
+
+
+def test_zerar_vendas_mantem_cardapio_e_equipe(app):
+    admin = entrar(app, "admin", "giovanna123")
+    assert admin.post("/api/admin/zerar-vendas", json={}).status_code == 400
+    assert admin.post("/api/admin/zerar-vendas", json={"confirmacao": "ZERAR"}).status_code == 200
+    dados = admin.get("/api/admin/indicadores").json
+    assert dados["faturamento"] == 0 and dados["pedidos"] == 0 and dados["mesas_abertas"] == 0
+    assert all(m["status"] == "livre" for m in admin.get("/api/mesas").json)
+    assert len(admin.get("/api/admin/cardapio").json["produtos"]) == 34

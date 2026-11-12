@@ -3,28 +3,28 @@ import io
 import re
 import socket
 import uuid
-from datetime import date
 from pathlib import Path
 
 import segno
-from flask import Blueprint, Response, current_app, g, jsonify, render_template, request
+from flask import Blueprint, Response, g, jsonify, render_template, request
 from werkzeug.security import generate_password_hash
 
 from . import servicos
 from .auth import exige, pagina_exige
 from .db import get_db
-from .eventos import canal
+from .eventos import publicar
 from .servicos import Erro
 
 bp = Blueprint("admin", __name__)
 
 TIPOS_CATEGORIA = ("pizza", "bebida", "outro")
 PERFIS = ("admin", "garcom", "cozinha")
-ASSINATURAS_IMAGEM = {
-    ".png": (b"\x89PNG",),
-    ".jpg": (b"\xff\xd8\xff",),
-    ".jpeg": (b"\xff\xd8\xff",),
-    ".webp": (b"RIFF",),
+# extensão -> (assinatura no início do arquivo, tipo)
+IMAGENS = {
+    ".png": (b"\x89PNG", "image/png"),
+    ".jpg": (b"\xff\xd8\xff", "image/jpeg"),
+    ".jpeg": (b"\xff\xd8\xff", "image/jpeg"),
+    ".webp": (b"RIFF", "image/webp"),
 }
 
 
@@ -73,7 +73,7 @@ def cardapio():
             dict(l)
             for l in db.execute(
                 """SELECT id, categoria_id, nome, descricao, preco, imagem, ativo FROM produtos
-                   WHERE excluido = 0 ORDER BY nome COLLATE NOCASE"""
+                   WHERE excluido = 0 ORDER BY lower(nome)"""
             )
         ],
         bordas=[
@@ -97,10 +97,10 @@ def criar_categoria():
     nome, tipo, ativo = _dados_categoria(_corpo())
     with db:
         ordem = db.execute("SELECT COALESCE(MAX(ordem), 0) + 1 FROM categorias").fetchone()[0]
-        novo = db.execute(
+        novo = db.inserir(
             "INSERT INTO categorias (nome, tipo, ordem, ativo) VALUES (?, ?, ?, ?)", (nome, tipo, ordem, ativo)
-        ).lastrowid
-    canal.publicar("cardapio")
+        )
+    publicar("cardapio")
     return jsonify(id=novo), 201
 
 
@@ -112,7 +112,7 @@ def editar_categoria(categoria_id):
     nome, tipo, ativo = _dados_categoria(_corpo())
     with db:
         db.execute("UPDATE categorias SET nome = ?, tipo = ?, ativo = ? WHERE id = ?", (nome, tipo, ativo, categoria_id))
-    canal.publicar("cardapio")
+    publicar("cardapio")
     return jsonify(ok=True)
 
 
@@ -128,7 +128,7 @@ def excluir_categoria(categoria_id):
         raise Erro(f"Esta categoria ainda tem {em_uso} produto(s). Mova ou exclua os produtos antes.", 409)
     with db:
         db.execute("UPDATE categorias SET excluido = 1 WHERE id = ?", (categoria_id,))
-    canal.publicar("cardapio")
+    publicar("cardapio")
     return jsonify(ok=True)
 
 
@@ -142,7 +142,7 @@ def ordenar_categorias():
     with db:
         for posicao, categoria_id in enumerate(ids, start=1):
             db.execute("UPDATE categorias SET ordem = ? WHERE id = ?", (posicao, categoria_id))
-    canal.publicar("cardapio")
+    publicar("cardapio")
     return jsonify(ok=True)
 
 
@@ -175,11 +175,11 @@ def criar_produto():
     db = get_db()
     valores = _dados_produto(db, _corpo())
     with db:
-        novo = db.execute(
+        novo = db.inserir(
             "INSERT INTO produtos (categoria_id, nome, descricao, preco, imagem, ativo) VALUES (?, ?, ?, ?, ?, ?)",
             valores,
-        ).lastrowid
-    canal.publicar("cardapio")
+        )
+    publicar("cardapio")
     return jsonify(id=novo), 201
 
 
@@ -195,7 +195,7 @@ def editar_produto(produto_id):
                WHERE id = ?""",
             (*valores, produto_id),
         )
-    canal.publicar("cardapio")
+    publicar("cardapio")
     return jsonify(ok=True)
 
 
@@ -207,7 +207,7 @@ def pausar(tabela, registro_id):
     ativo = 1 if _corpo().get("ativo") else 0
     with db:
         db.execute(f"UPDATE {tabela} SET ativo = ? WHERE id = ?", (ativo, registro_id))
-    canal.publicar("cardapio")
+    publicar("cardapio")
     return jsonify(ok=True)
 
 
@@ -218,7 +218,7 @@ def excluir(tabela, registro_id):
     _existe(db, tabela, registro_id)
     with db:
         db.execute(f"UPDATE {tabela} SET excluido = 1 WHERE id = ?", (registro_id,))
-    canal.publicar("cardapio")
+    publicar("cardapio")
     return jsonify(ok=True)
 
 
@@ -228,8 +228,8 @@ def criar_borda():
     db = get_db()
     dados = _corpo()
     with db:
-        novo = db.execute("INSERT INTO bordas (nome, preco) VALUES (?, ?)", (_nome(dados), _preco(dados))).lastrowid
-    canal.publicar("cardapio")
+        novo = db.inserir("INSERT INTO bordas (nome, preco) VALUES (?, ?)", (_nome(dados), _preco(dados)))
+    publicar("cardapio")
     return jsonify(id=novo), 201
 
 
@@ -241,7 +241,7 @@ def editar_borda(borda_id):
     dados = _corpo()
     with db:
         db.execute("UPDATE bordas SET nome = ?, preco = ? WHERE id = ?", (_nome(dados), _preco(dados), borda_id))
-    canal.publicar("cardapio")
+    publicar("cardapio")
     return jsonify(ok=True)
 
 
@@ -252,12 +252,14 @@ def enviar_imagem():
     if not arquivo or not arquivo.filename:
         raise Erro("Escolha uma imagem.")
     extensao = Path(arquivo.filename).suffix.lower()
-    inicio = arquivo.stream.read(12)
-    arquivo.stream.seek(0)
-    if extensao not in ASSINATURAS_IMAGEM or not inicio.startswith(ASSINATURAS_IMAGEM[extensao]):
+    conteudo = arquivo.stream.read()
+    if extensao not in IMAGENS or not conteudo.startswith(IMAGENS[extensao][0]):
         raise Erro("Use uma imagem JPG, PNG ou WebP.")
+    # A foto fica no banco: hospedagens como a Vercel não têm disco que guarde arquivos.
     nome = f"{uuid.uuid4().hex}{extensao}"
-    arquivo.save(Path(current_app.config["PASTA_UPLOADS"]) / nome)
+    db = get_db()
+    with db:
+        db.execute("INSERT INTO imagens (nome, tipo, dados) VALUES (?, ?, ?)", (nome, IMAGENS[extensao][1], conteudo))
     return jsonify(url=f"/uploads/{nome}"), 201
 
 
@@ -277,7 +279,7 @@ def fechar(mesa_id):
         dados.get("pagamentos", []),
         g.usuario["id"],
     )
-    canal.publicar("pedidos", "caixa")
+    publicar("pedidos", "mesas", "caixa")
     return jsonify(resumo)
 
 
@@ -285,14 +287,24 @@ def fechar(mesa_id):
 @exige("admin")
 def estornar(item_id):
     servicos.estornar_item(get_db(), item_id)
-    canal.publicar("pedidos")
+    publicar("pedidos")
     return jsonify(ok=True)
 
 
 @bp.get("/api/admin/contas")
 @exige("admin")
 def contas():
-    return jsonify(servicos.contas_fechadas(get_db(), request.args.get("dia") or date.today().isoformat()))
+    return jsonify(servicos.contas_fechadas(get_db(), request.args.get("dia")))
+
+
+@bp.post("/api/admin/zerar-vendas")
+@exige("admin")
+def zerar_vendas():
+    if _corpo().get("confirmacao") != "ZERAR":
+        raise Erro("Confirmação inválida.")
+    servicos.zerar_movimento(get_db())
+    publicar("pedidos", "mesas", "caixa")
+    return jsonify(ok=True)
 
 
 @bp.get("/api/admin/indicadores")
@@ -374,7 +386,7 @@ def criar_mesa():
             db.execute("UPDATE mesas SET ativo = 1, chamado = NULL, chamado_em = NULL WHERE id = ?", (existente["id"],))
         else:
             db.execute("INSERT INTO mesas (numero) VALUES (?)", (numero,))
-    canal.publicar("mesas")
+    publicar("mesas")
     return jsonify(ok=True), 201
 
 
@@ -387,7 +399,7 @@ def excluir_mesa(mesa_id):
         raise Erro("Esta mesa tem conta aberta. Feche a conta antes de excluir.", 409)
     with db:
         db.execute("UPDATE mesas SET ativo = 0, chamado = NULL, chamado_em = NULL WHERE id = ?", (mesa_id,))
-    canal.publicar("mesas")
+    publicar("mesas")
     return jsonify(ok=True)
 
 
