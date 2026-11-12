@@ -69,15 +69,18 @@ Variáveis opcionais: `SECRET_KEY` (chave das sessões; sem ela, uma é gerada e
 O plano gratuito (Hobby) da Vercel é para uso pessoal e tem limites mensais de uso. Para a operação
 diária da pizzaria, confira os limites e os termos do plano.
 
-## Acessos de teste
+## Acessos iniciais
 
-| Perfil  | Usuário   | Senha         | Tela       |
-|---------|-----------|---------------|------------|
-| Gerente | `admin`   | `giovanna123` | `/admin`   |
-| Garçom  | `garcom`  | `garcom123`   | `/garcom`  |
-| Cozinha | `cozinha` | `cozinha123`  | `/cozinha` |
+| Perfil  | Usuário   | Senha provisória | Tela       |
+|---------|-----------|------------------|------------|
+| Gerente | `admin`   | `giovanna123`    | `/admin`   |
+| Garçom  | `garcom`  | `garcom123`      | `/garcom`  |
+| Cozinha | `cozinha` | `cozinha123`     | `/cozinha` |
 
-O cliente não tem login: abre `/mesa/<número>` pelo QR Code. Troque as senhas em **Equipe** antes de usar de verdade.
+Essas senhas são públicas, por isso são provisórias: no primeiro acesso o sistema obriga cada pessoa a criar
+a própria senha (8 caracteres ou mais) antes de qualquer outra coisa. **Em um site publicado, entre com os
+três usuários logo após o primeiro deploy**, ou alguém de fora pode fazer isso antes. O cliente não tem login:
+abre `/mesa/<número>` pelo QR Code.
 
 ## O que cada perfil faz
 
@@ -110,6 +113,33 @@ templates/          páginas HTML
 public/static/      CSS, JavaScript, fontes e fotos
 tests/              testes automáticos da API
 ```
+
+## Segurança e LGPD
+
+O que o sistema faz:
+
+- **Senhas**: guardadas com hash (scrypt); senha provisória obriga a troca no primeiro acesso; ao trocar a
+  senha, as sessões antigas caem; 8 tentativas erradas bloqueiam o usuário por 15 minutos (contagem no banco).
+- **Sessão**: cookie `HttpOnly`, `Secure` e `SameSite=Lax`, com validade de 16 horas; alterações vindas de
+  outro site são recusadas.
+- **Permissões**: cada rota confere o perfil no servidor; preços e totais são calculados no servidor.
+- **Navegador**: Content-Security-Policy sem scripts embutidos, `Referrer-Policy`, `X-Frame-Options`,
+  `nosniff`; nenhum recurso de terceiros (fontes e scripts são do próprio site).
+- **Rotas abertas** (pedido pelo QR Code): limite de 10 pedidos por mesa a cada 10 minutos e de itens por pedido.
+- **Dados pessoais**: o cliente não informa nome, telefone, e-mail nem CPF; não há cookies de rastreamento;
+  observações dos pedidos são apagadas 30 dias após o fechamento da conta; excluir alguém da equipe apaga
+  nome e usuário; o aviso de privacidade fica em `/privacidade`, com os dados da empresa preenchidos pelo
+  gerente em **Privacidade**.
+
+O que depende de quem opera (o sistema não resolve sozinho):
+
+- Preencher razão social, CNPJ e contato em **Privacidade** e revisar o texto do aviso com um advogado ou contador.
+- Informar a equipe sobre o tratamento dos dados dela e não compartilhar senhas entre pessoas.
+- Vercel e Neon são operadores dos dados; com servidores fora do Brasil há transferência internacional
+  (o aviso já informa). Criar o banco na região São Paulo reduz essa exposição.
+- Em caso de incidente com dados pessoais, a LGPD exige avaliar e comunicar à ANPD e aos titulares.
+- Qualquer pessoa com o endereço consegue abrir `/mesa/<número>` e pedir. O limite por mesa contém abusos,
+  mas não impede um pedido falso isolado; a equipe deve conferir pedidos estranhos.
 
 Testes:
 

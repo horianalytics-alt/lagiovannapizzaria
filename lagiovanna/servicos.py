@@ -8,6 +8,7 @@ FORMAS_PAGAMENTO = ("dinheiro", "pix", "credito", "debito")
 STATUS_PEDIDO = ("pendente", "preparo", "pronto", "entregue", "cancelado")
 MAX_ITENS = 40
 MAX_QUANTIDADE = 20
+DIAS_DE_OBSERVACAO = 30
 
 
 class Erro(Exception):
@@ -364,6 +365,15 @@ def fechar_conta(db, mesa, desconto, taxa_pct, pagamentos, usuario_id):
             (momento, subtotal, desconto, taxa_pct, taxa, total, usuario_id, comanda["id"]),
         )
         db.execute("UPDATE mesas SET chamado = NULL, chamado_em = NULL WHERE id = ?", (mesa["id"],))
+        # Retenção: o texto livre das observações pode conter dado pessoal; depois de 30 dias não é mais necessário.
+        limite = (agora_dt() - timedelta(days=DIAS_DE_OBSERVACAO)).strftime("%Y-%m-%d %H:%M:%S")
+        db.execute(
+            """UPDATE pedido_itens SET observacao = NULL
+               WHERE observacao IS NOT NULL AND pedido_id IN (
+                   SELECT p.id FROM pedidos p JOIN comandas c ON c.id = p.comanda_id
+                   WHERE c.status = 'fechada' AND c.fechada_em < ?)""",
+            (limite,),
+        )
     return dict(comanda_id=comanda["id"], subtotal=subtotal, desconto=desconto, taxa_servico=taxa, total=total)
 
 

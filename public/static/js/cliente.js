@@ -91,6 +91,8 @@ function Cliente() {
       </div>`}
       ${!cardapio.dados && !cardapio.erro && html`<p class="carregando">Abrindo o cardápio…</p>`}
       ${cardapio.dados && html`<${Cardapio} cardapio=${cardapio.dados} carrinho=${carrinho} />`}
+      <p class="rodape-privacidade">Não pedimos seu nome, telefone ou CPF para fazer o pedido.
+        <a href="/privacidade">Aviso de privacidade</a></p>
     </main>
 
     <div class="barra-pedido">

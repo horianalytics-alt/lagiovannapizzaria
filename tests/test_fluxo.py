@@ -19,9 +19,15 @@ def app(tmp_path):
 
 
 def entrar(app, usuario, senha):
+    """Entra e, se a senha for provisória (como as do seed), define uma nova: senha + "-Nova1"."""
     cliente = app.test_client()
     resposta = cliente.post("/api/login", json={"usuario": usuario, "senha": senha})
+    if resposta.status_code == 401:
+        resposta = cliente.post("/api/login", json={"usuario": usuario, "senha": senha + "-Nova1"})
     assert resposta.status_code == 200, resposta.json
+    if resposta.json["trocar_senha"]:
+        troca = cliente.post("/api/minha-senha", json={"atual": senha, "nova": senha + "-Nova1"})
+        assert troca.status_code == 200, troca.json
     return cliente
 
 
@@ -115,6 +121,7 @@ def test_acesso_por_perfil(app):
     assert anonimo.get("/api/mesas").status_code == 401
     assert anonimo.get("/admin").status_code == 302
     assert anonimo.post("/api/login", json={"usuario": "admin", "senha": "errada"}).status_code == 401
+    assert anonimo.get("/mesa?n=5").headers["Location"] == "/mesa/05"
     cozinha = entrar(app, "cozinha", "cozinha123")
     assert cozinha.get("/api/admin/indicadores").status_code == 403
     assert cozinha.get("/api/mesas").status_code == 403
@@ -178,8 +185,8 @@ def test_mesas_qrcode_e_equipe(app):
     assert admin.delete(f"/api/admin/mesas/{ocupada['id']}").status_code == 409
 
     assert admin.post("/api/admin/usuarios", json={
-        "nome": "Bia", "usuario": "bia", "senha": "segredo1", "perfil": "garcom"}).status_code == 201
-    bia = entrar(app, "bia", "segredo1")
+        "nome": "Bia", "usuario": "bia", "senha": "segredo-01", "perfil": "garcom"}).status_code == 201
+    bia = entrar(app, "bia", "segredo-01")
     assert bia.get("/api/mesas").status_code == 200
     bia_id = next(u["id"] for u in admin.get("/api/admin/usuarios").json if u["usuario"] == "bia")
     assert admin.put(f"/api/admin/usuarios/{bia_id}", json={"nome": "Bia", "perfil": "garcom", "ativo": False}).status_code == 200
@@ -224,3 +231,80 @@ def test_zerar_vendas_mantem_cardapio_e_equipe(app):
     assert dados["faturamento"] == 0 and dados["pedidos"] == 0 and dados["mesas_abertas"] == 0
     assert all(m["status"] == "livre" for m in admin.get("/api/mesas").json)
     assert len(admin.get("/api/admin/cardapio").json["produtos"]) == 34
+
+
+def test_senha_provisoria_bloqueia_ate_trocar_e_sessao_antiga_cai(app):
+    admin = app.test_client()
+    login = admin.post("/api/login", json={"usuario": "admin", "senha": "giovanna123"})
+    assert login.json["trocar_senha"] is True
+    bloqueio = admin.get("/api/admin/indicadores")
+    assert bloqueio.status_code == 403 and bloqueio.json["trocar_senha"] is True
+    assert admin.get("/admin").headers["Location"] == "/trocar-senha"
+    assert admin.post("/api/minha-senha", json={"atual": "errada", "nova": "Outra-senha-9"}).status_code == 400
+    assert admin.post("/api/minha-senha", json={"atual": "giovanna123", "nova": "curta"}).status_code == 400
+    assert admin.post("/api/minha-senha", json={"atual": "giovanna123", "nova": "garcom123"}).status_code == 400
+    assert admin.post("/api/minha-senha", json={"atual": "giovanna123", "nova": "Outra-senha-9"}).status_code == 200
+    assert admin.get("/api/admin/indicadores").status_code == 200
+
+    # Outra sessão aberta com a senha antiga deixa de valer quando a senha muda.
+    outro = app.test_client()
+    assert outro.post("/api/login", json={"usuario": "admin", "senha": "Outra-senha-9"}).status_code == 200
+    assert admin.post("/api/minha-senha", json={"atual": "Outra-senha-9", "nova": "Mais-uma-senha-7"}).status_code == 200
+    assert outro.get("/api/admin/indicadores").status_code == 401
+    assert admin.get("/api/admin/indicadores").status_code == 200
+
+
+def test_limite_de_tentativas_de_login(app):
+    cliente = app.test_client()
+    for _ in range(8):
+        assert cliente.post("/api/login", json={"usuario": "garcom", "senha": "errada"}).status_code == 401
+    assert cliente.post("/api/login", json={"usuario": "garcom", "senha": "garcom123"}).status_code == 429
+    # Outro usuário, do mesmo endereço, ainda consegue entrar.
+    assert cliente.post("/api/login", json={"usuario": "cozinha", "senha": "cozinha123"}).status_code == 200
+
+
+def test_protecoes_das_paginas_e_das_rotas_abertas(app):
+    publico = app.test_client()
+    pagina = publico.get("/mesa/5")
+    politica = pagina.headers["Content-Security-Policy"]
+    assert "script-src 'self'" in politica and "unsafe-inline" not in politica
+    assert pagina.headers["Referrer-Policy"] == "same-origin" and pagina.headers["Cache-Control"] == "no-store"
+    html = pagina.get_data(as_text=True)
+    assert "<script>" not in html and "onclick" not in html and "onsubmit" not in publico.get("/").get_data(as_text=True)
+
+    # Alteração vinda de outro site é recusada.
+    de_fora = publico.post("/api/mesa/1/chamar", json={"tipo": "garcom"}, headers={"Origin": "https://outro-site.example"})
+    assert de_fora.status_code == 403
+
+    # Limite de pedidos pelo QR Code por mesa.
+    item = {"itens": [{"produto_id": 1, "quantidade": 1}]}
+    codigos = [publico.post("/api/mesa/12/pedidos", json=item).status_code for _ in range(11)]
+    assert codigos == [201] * 10 + [429]
+
+    # Chamado repetido não gera novo aviso para o salão.
+    publico.post("/api/mesa/1/chamar", json={"tipo": "garcom"})
+    antes = publico.get("/api/versao").json["versoes"]["mesas"]
+    publico.post("/api/mesa/1/chamar", json={"tipo": "garcom"})
+    assert publico.get("/api/versao").json["versoes"]["mesas"] == antes
+
+
+def test_privacidade_aviso_e_exclusao_de_integrante(app):
+    publico = app.test_client()
+    admin = entrar(app, "admin", "giovanna123")
+    assert admin.put("/api/admin/privacidade", json={
+        "empresa_nome": "La Giovanna Ltda.", "empresa_cnpj": "12.345.678/0001-90",
+        "empresa_contato": "privacidade@exemplo.com"}).status_code == 200
+    aviso = publico.get("/privacidade").get_data(as_text=True)
+    assert "La Giovanna Ltda." in aviso and "12.345.678/0001-90" in aviso and "privacidade@exemplo.com" in aviso
+
+    garcom = entrar(app, "garcom", "garcom123")
+    mesa = admin.get("/api/mesas").json[0]
+    assert garcom.post(f"/api/mesas/{mesa['id']}/pedidos", json={"itens": [{"produto_id": 1, "quantidade": 1}]}).status_code == 201
+    garcom_id = next(u["id"] for u in admin.get("/api/admin/usuarios").json if u["usuario"] == "garcom")
+    assert admin.delete(f"/api/admin/usuarios/{garcom_id}").status_code == 200
+    assert garcom.get("/api/mesas").status_code == 401
+    assert all(u["usuario"] != "garcom" for u in admin.get("/api/admin/usuarios").json)
+    pedido = admin.get(f"/api/mesas/{mesa['id']}").json["pedidos"][-1]
+    assert pedido["atendente"] == "Ex-integrante da equipe"
+    eu = admin.get("/api/eu").json
+    assert admin.delete(f"/api/admin/usuarios/{eu['id']}").status_code == 409

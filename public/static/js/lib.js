@@ -3,6 +3,9 @@ import { html, render, useState, useEffect, useRef, useMemo, useCallback } from 
 
 export { html, render, useState, useEffect, useRef, useMemo, useCallback };
 
+// Dados que o servidor entrega junto com a página (mesa ou pessoa logada), sem script embutido no HTML.
+window.DADOS = JSON.parse(document.getElementById('dados')?.textContent || '{}');
+
 // ---------- Formatação ----------
 
 export const reais = (centavos) => (centavos / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -53,6 +56,9 @@ export async function api(caminho, { metodo = 'GET', corpo, form } = {}) {
   if (!resposta.ok) {
     if (resposta.status === 401 && window.DADOS?.usuario) {
       location.href = '/entrar?proximo=' + encodeURIComponent(location.pathname);
+    }
+    if (resposta.status === 403 && dados?.trocar_senha && location.pathname !== '/trocar-senha') {
+      location.href = '/trocar-senha';
     }
     throw new ErroApi(dados?.erro || 'Algo deu errado. Tente de novo.', resposta.status);
   }
@@ -525,7 +531,7 @@ export function BarraEquipe({ titulo, usuario, children }) {
     <div class="barra-marca"><${Letreiro} classe="letreiro-pequeno" /><span class="barra-titulo">${titulo}</span></div>
     <div class="barra-acoes">
       ${children}
-      <span class="barra-usuario">${usuario.nome}</span>
+      <a class="barra-usuario" href="/trocar-senha" title="Trocar minha senha">${usuario.nome}</a>
       <button class="botao-icone" onClick=${sair} aria-label="Sair" title="Sair"><${Icone} nome="sair" /></button>
     </div>
   </header>`;

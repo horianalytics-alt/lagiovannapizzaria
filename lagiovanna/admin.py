@@ -6,12 +6,12 @@ import uuid
 from pathlib import Path
 
 import segno
-from flask import Blueprint, Response, g, jsonify, render_template, request
+from flask import Blueprint, Response, g, jsonify, render_template, request, session
 from werkzeug.security import generate_password_hash
 
 from . import servicos
-from .auth import exige, pagina_exige
-from .db import get_db
+from .auth import _marca_da_senha, exige, pagina_exige, validar_senha_nova
+from .db import agora, get_db
 from .eventos import publicar
 from .servicos import Erro
 
@@ -443,7 +443,12 @@ def imprimir_qrcodes():
 @exige("admin")
 def usuarios():
     return jsonify(
-        [dict(l) for l in get_db().execute("SELECT id, nome, usuario, perfil, ativo FROM usuarios ORDER BY nome")]
+        [
+            dict(l)
+            for l in get_db().execute(
+                "SELECT id, nome, usuario, perfil, ativo, trocar_senha FROM usuarios WHERE excluido_em IS NULL ORDER BY nome"
+            )
+        ]
     )
 
 
@@ -451,8 +456,9 @@ def _senha(dados, obrigatoria):
     senha = dados.get("senha")
     if not senha and not obrigatoria:
         return None
-    if not isinstance(senha, str) or len(senha) < 6:
-        raise Erro("A senha precisa ter pelo menos 6 caracteres.")
+    problema = validar_senha_nova(senha)
+    if problema:
+        raise Erro(problema)
     return generate_password_hash(senha)
 
 
@@ -474,7 +480,8 @@ def criar_usuario():
         raise Erro("Já existe alguém com esse usuário.", 409)
     with db:
         db.execute(
-            "INSERT INTO usuarios (nome, usuario, senha_hash, perfil) VALUES (?, ?, ?, ?)",
+            # A senha criada pelo gerente é provisória: a pessoa define a própria no primeiro acesso.
+            "INSERT INTO usuarios (nome, usuario, senha_hash, perfil, trocar_senha) VALUES (?, ?, ?, ?, 1)",
             (_nome(dados), usuario, _senha(dados, True), _perfil(dados)),
         )
     return jsonify(ok=True), 201
@@ -485,7 +492,7 @@ def criar_usuario():
 def editar_usuario(usuario_id):
     db = get_db()
     dados = _corpo()
-    if not db.execute("SELECT 1 FROM usuarios WHERE id = ?", (usuario_id,)).fetchone():
+    if not db.execute("SELECT 1 FROM usuarios WHERE id = ? AND excluido_em IS NULL", (usuario_id,)).fetchone():
         raise Erro("Pessoa não encontrada.", 404)
     perfil, ativo = _perfil(dados), 1 if dados.get("ativo", True) else 0
     if usuario_id == g.usuario["id"] and (perfil != "admin" or not ativo):
@@ -494,5 +501,65 @@ def editar_usuario(usuario_id):
     with db:
         db.execute("UPDATE usuarios SET nome = ?, perfil = ?, ativo = ? WHERE id = ?", (_nome(dados), perfil, ativo, usuario_id))
         if senha_hash:
-            db.execute("UPDATE usuarios SET senha_hash = ? WHERE id = ?", (senha_hash, usuario_id))
+            # Senha redefinida pelo gerente também é provisória (menos a dele mesmo).
+            provisoria = 0 if usuario_id == g.usuario["id"] else 1
+            db.execute(
+                "UPDATE usuarios SET senha_hash = ?, trocar_senha = ? WHERE id = ?", (senha_hash, provisoria, usuario_id)
+            )
+    if senha_hash and usuario_id == g.usuario["id"]:
+        session["sv"] = _marca_da_senha(senha_hash)
+    return jsonify(ok=True)
+
+
+@bp.delete("/api/admin/usuarios/<int:usuario_id>")
+@exige("admin")
+def excluir_usuario(usuario_id):
+    """Apaga os dados pessoais de quem saiu da equipe. O histórico de vendas fica, sem o nome."""
+    db = get_db()
+    if usuario_id == g.usuario["id"]:
+        raise Erro("Você não pode excluir o próprio acesso.", 409)
+    if not db.execute("SELECT 1 FROM usuarios WHERE id = ? AND excluido_em IS NULL", (usuario_id,)).fetchone():
+        raise Erro("Pessoa não encontrada.", 404)
+    with db:
+        db.execute(
+            """UPDATE usuarios SET nome = 'Ex-integrante da equipe', usuario = ?, senha_hash = '!', ativo = 0,
+                      excluido_em = ? WHERE id = ?""",
+            (f"excluido-{usuario_id}", agora(), usuario_id),
+        )
+    return jsonify(ok=True)
+
+
+# ---------- Privacidade (LGPD) ----------
+
+CAMPOS_EMPRESA = {"empresa_nome": 120, "empresa_cnpj": 20, "empresa_contato": 160}
+
+
+def dados_da_empresa(db):
+    salvos = {
+        linha["chave"]: linha["valor"]
+        for linha in db.execute(
+            "SELECT chave, valor FROM config WHERE chave IN (?, ?, ?)", tuple(CAMPOS_EMPRESA)
+        )
+    }
+    return {campo: salvos.get(campo, "") for campo in CAMPOS_EMPRESA}
+
+
+@bp.get("/api/admin/privacidade")
+@exige("admin")
+def privacidade():
+    return jsonify(dados_da_empresa(get_db()))
+
+
+@bp.put("/api/admin/privacidade")
+@exige("admin")
+def salvar_privacidade():
+    db = get_db()
+    dados = _corpo()
+    with db:
+        for campo, limite in CAMPOS_EMPRESA.items():
+            valor = " ".join(str(dados.get(campo) or "").split())[:limite]
+            db.execute(
+                "INSERT INTO config (chave, valor) VALUES (?, ?) ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor",
+                (campo, valor),
+            )
     return jsonify(ok=True)

@@ -1,10 +1,15 @@
 """Páginas e API usadas por cliente, garçom e cozinha."""
+from datetime import timedelta
+
 from flask import Blueprint, Response, abort, g, jsonify, redirect, render_template, request, session
 
 from . import servicos
 from .auth import INICIO_POR_PERFIL, exige, pagina_exige
+from .db import agora_dt
 from .db import agora, get_db
 from .eventos import publicar, versoes
+
+MAX_PEDIDOS_POR_MESA = 10  # pedidos feitos pelo QR Code, por mesa, a cada 10 minutos
 
 paginas = Blueprint("paginas", __name__)
 api = Blueprint("api", __name__, url_prefix="/api")
@@ -17,10 +22,35 @@ def inicio():
     return render_template("inicio.html")
 
 
+@paginas.get("/mesa")
+def ir_para_mesa():
+    """Recebe o número digitado na página inicial e leva ao cardápio da mesa."""
+    numero = request.args.get("n", "")
+    if numero.isdigit() and 0 < int(numero) < 1000:
+        return redirect(f"/mesa/{int(numero):02d}")
+    return redirect("/")
+
+
+@paginas.get("/privacidade")
+def privacidade():
+    from .admin import dados_da_empresa
+
+    return render_template("privacidade.html", empresa=dados_da_empresa(get_db()))
+
+
+@paginas.get("/trocar-senha")
+def trocar_senha():
+    if g.usuario is None:
+        return redirect("/entrar")
+    dados = _dados_usuario()
+    dados["obrigatoria"] = bool(g.usuario["trocar_senha"])
+    return render_template("app.html", modulo="senha", titulo="Trocar senha", tema="claro", dados=dados)
+
+
 @paginas.get("/entrar")
 def entrar():
     if g.usuario is not None:
-        return redirect(INICIO_POR_PERFIL[g.usuario["perfil"]])
+        return redirect("/trocar-senha" if g.usuario["trocar_senha"] else INICIO_POR_PERFIL[g.usuario["perfil"]])
     return render_template("app.html", modulo="entrar", titulo="Entrar", tema="claro")
 
 
@@ -122,6 +152,13 @@ def pedido_cliente(numero):
     db = get_db()
     dados = request.get_json(silent=True) or {}
     mesa = servicos.mesa_por_numero(db, numero)
+    # Esta rota é aberta; o limite impede que alguém de fora encha a cozinha de pedidos falsos.
+    desde = (agora_dt() - timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
+    recentes = db.execute(
+        "SELECT COUNT(*) FROM pedidos WHERE mesa_id = ? AND origem = 'cliente' AND criado_em >= ?", (mesa["id"], desde)
+    ).fetchone()[0]
+    if recentes >= MAX_PEDIDOS_POR_MESA:
+        raise servicos.Erro("Muitos pedidos desta mesa em pouco tempo. Chame um garçom para continuar.", 429)
     pedido_id = servicos.criar_pedido(db, mesa, dados.get("itens"), "cliente")
     publicar("pedidos")
     return jsonify(pedido_id=pedido_id), 201
@@ -134,9 +171,10 @@ def chamar(numero):
     if tipo not in ("garcom", "conta"):
         raise servicos.Erro("Chamado inválido.")
     mesa = servicos.mesa_por_numero(db, numero)
-    with db:
-        db.execute("UPDATE mesas SET chamado = ?, chamado_em = ? WHERE id = ?", (tipo, agora(), mesa["id"]))
-    publicar("mesas")
+    if mesa["chamado"] != tipo:  # repetir o mesmo chamado não gera novo aviso
+        with db:
+            db.execute("UPDATE mesas SET chamado = ?, chamado_em = ? WHERE id = ?", (tipo, agora(), mesa["id"]))
+        publicar("mesas")
     return jsonify(ok=True)
 
 

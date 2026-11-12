@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="pt-BR" data-tema="claro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#b51c1b">
+<title>Aviso de privacidade | La Giovanna</title>
+<link rel="icon" href="/static/img/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/css/app.css?v={{ versao }}">
+</head>
+<body class="pagina-privacidade">
+<div class="bandeira" aria-hidden="true"></div>
+<main class="privacidade">
+  <header class="privacidade-topo">
+    <a class="letreiro" href="/">
+      <span class="letreiro-sub">Pizzaria e Cafeteria</span>
+      <span class="letreiro-nome">La Giovanna</span>
+    </a>
+  </header>
+
+  <h1>Aviso de privacidade</h1>
+  <p>Este aviso explica, em linguagem simples, quais informações o cardápio digital da La Giovanna usa e
+    para quê, conforme a Lei Geral de Proteção de Dados (Lei nº 13.709/2018).</p>
+
+  <h2>Quem é responsável</h2>
+  <p>{{ empresa.empresa_nome or 'La Giovanna Pizzaria e Cafeteria' }}{% if empresa.empresa_cnpj %}, CNPJ {{ empresa.empresa_cnpj }}{% endif %},
+    é a controladora dos dados tratados neste sistema.</p>
+  <p>Para tirar dúvidas ou exercer seus direitos:
+    {% if empresa.empresa_contato %}<strong>{{ empresa.empresa_contato }}</strong>{% else %}fale com a gerência no balcão da pizzaria{% endif %}.</p>
+
+  <h2>Se você é cliente</h2>
+  <p>Para pedir pelo QR Code da mesa <strong>não pedimos nome, telefone, e-mail, CPF nem cadastro</strong>.
+    O sistema registra apenas:</p>
+  <ul>
+    <li>o número da mesa;</li>
+    <li>os itens pedidos, as observações que você escrever e os horários;</li>
+    <li>ao fechar a conta, a forma de pagamento e o valor. Dados de cartão e de Pix não passam por este sistema.</li>
+  </ul>
+  <p>Usamos essas informações para preparar e entregar seu pedido, fechar a conta e acompanhar as vendas da casa.</p>
+  <p>O campo de observações é para o preparo (por exemplo, “sem cebola”). Não escreva nele dados pessoais.
+    Se você tem alergia ou restrição alimentar, avise também o garçom. As observações são apagadas
+    automaticamente 30 dias depois do fechamento da conta.</p>
+
+  <h2>No seu aparelho</h2>
+  <ul>
+    <li>Não usamos cookies de publicidade, de rastreamento nem ferramentas de análise de terceiros.</li>
+    <li>O pedido que você está montando fica guardado só no seu aparelho até ser enviado.</li>
+    <li>Como em qualquer site, o provedor de hospedagem registra dados técnicos de acesso, como endereço IP,
+      data e hora, para manter o serviço seguro e funcionando.</li>
+  </ul>
+
+  <h2>Se você é da equipe</h2>
+  <p>Para quem trabalha na pizzaria, o sistema guarda nome, nome de usuário, senha (armazenada de forma
+    cifrada, que nem a gerência consegue ler) e a função. Também registra quais pedidos você lançou e
+    quais contas fechou, para a gestão do atendimento e do caixa. O acesso usa um cookie de sessão,
+    necessário para manter você conectado. Tentativas de login com erro ficam registradas por até 24 horas
+    para proteger as contas.</p>
+
+  <h2>Por que podemos usar esses dados</h2>
+  <ul>
+    <li>Para atender o seu pedido e cumprir o contrato de trabalho da equipe (execução de contrato).</li>
+    <li>Para cumprir obrigações legais e fiscais.</li>
+    <li>Para gerir o negócio e proteger o sistema contra fraudes (legítimo interesse).</li>
+  </ul>
+
+  <h2>Com quem compartilhamos</h2>
+  <p>Não vendemos nem cedemos dados. O sistema funciona com dois prestadores de serviço, que tratam os
+    dados somente em nosso nome: a Vercel (hospedagem do site) e a Neon (banco de dados). Os servidores
+    dessas empresas podem ficar fora do Brasil, o que caracteriza transferência internacional de dados.</p>
+
+  <h2>Por quanto tempo guardamos</h2>
+  <ul>
+    <li>Observações dos pedidos: 30 dias após o fechamento da conta.</li>
+    <li>Registros de vendas (itens, valores e forma de pagamento, sem identificar o cliente): pelo tempo
+      necessário à gestão e às obrigações fiscais.</li>
+    <li>Dados da equipe: enquanto durar o vínculo; depois, o nome e o usuário são apagados do sistema.</li>
+  </ul>
+
+  <h2>Seus direitos</h2>
+  <p>Você pode pedir a confirmação de que tratamos seus dados, o acesso a eles, a correção, a eliminação,
+    a portabilidade e informações sobre compartilhamento, além de se opor a um tratamento. Basta usar o
+    contato acima. Você também pode procurar a Autoridade Nacional de Proteção de Dados (ANPD).</p>
+
+  <h2>Como protegemos</h2>
+  <p>A conexão com o site é criptografada, as áreas da equipe exigem login com senha individual, cada
+    função vê apenas o que precisa e as senhas nunca são guardadas em texto legível.</p>
+
+  <p class="nota">Podemos atualizar este aviso quando o sistema mudar. A versão em vigor é sempre a desta página.</p>
+</main>
+</body>
+</html>

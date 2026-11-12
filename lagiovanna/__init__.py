@@ -12,6 +12,13 @@ from .servicos import Erro
 
 RAIZ = Path(__file__).resolve().parent.parent
 
+# Só carrega scripts, estilos, fontes e imagens do próprio site: um texto malicioso que escapasse
+# para a página não conseguiria executar código nem enviar dados para fora.
+POLITICA_DE_CONTEUDO = (
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; "
+    "connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
+)
+
 
 def banco_configurado(pasta_dados=None, url_banco=None):
     """Postgres quando há DATABASE_URL (nuvem); senão, um arquivo SQLite na pasta de dados."""
@@ -35,7 +42,8 @@ def create_app(pasta_dados=None, url_banco=None):
 
     db = abrir(*banco)
     criar_tabelas(db)
-    seed.popular_se_vazio(db)
+    # Na nuvem o sistema nasce sem vendas fictícias; no computador elas ajudam a conhecer o painel.
+    seed.popular_se_vazio(db, com_movimento=not na_nuvem)
     segredo = chave_secreta(db)
     db.close()
 
@@ -55,6 +63,7 @@ def create_app(pasta_dados=None, url_banco=None):
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
     app.teardown_appcontext(fechar_db)
+    app.before_request(auth.conferir_origem)
     app.before_request(auth.carregar_usuario)
     app.register_blueprint(auth.bp)
     app.register_blueprint(rotas.paginas)
@@ -83,7 +92,11 @@ def create_app(pasta_dados=None, url_banco=None):
     def _cabecalhos(resposta):
         resposta.headers.setdefault("X-Content-Type-Options", "nosniff")
         resposta.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
-        if request.path.startswith("/api/") and "Cache-Control" not in resposta.headers:
+        resposta.headers.setdefault("Referrer-Policy", "same-origin")
+        resposta.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+        resposta.headers.setdefault("Content-Security-Policy", POLITICA_DE_CONTEUDO)
+        # Páginas e respostas da API mudam por pessoa e por momento: nada disso deve ficar guardado em cache.
+        if request.endpoint != "static" and "Cache-Control" not in resposta.headers:
             resposta.headers["Cache-Control"] = "no-store"
         return resposta
 

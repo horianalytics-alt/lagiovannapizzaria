@@ -21,7 +21,9 @@ CREATE TABLE IF NOT EXISTS usuarios (
     usuario TEXT NOT NULL UNIQUE,
     senha_hash TEXT NOT NULL,
     perfil TEXT NOT NULL CHECK (perfil IN ('admin', 'garcom', 'cozinha')),
-    ativo INTEGER NOT NULL DEFAULT 1
+    ativo INTEGER NOT NULL DEFAULT 1,
+    trocar_senha INTEGER NOT NULL DEFAULT 0,
+    excluido_em TEXT
 );
 CREATE TABLE IF NOT EXISTS categorias (
     id INTEGER PRIMARY KEY,
@@ -117,8 +119,17 @@ CREATE TABLE IF NOT EXISTS imagens (
 CREATE TABLE IF NOT EXISTS versoes (
     topico TEXT PRIMARY KEY,
     numero INTEGER NOT NULL DEFAULT 0
-)
+);
+CREATE TABLE IF NOT EXISTS tentativas_login (
+    id INTEGER PRIMARY KEY,
+    chave TEXT NOT NULL,
+    momento TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_tentativas_chave ON tentativas_login(chave, momento)
 """
+
+# Some quando o esquema acima mudar; o servidor só refaz a preparação quando o número gravado é outro.
+ESQUEMA = "2"
 
 
 def agora_dt():
@@ -277,20 +288,44 @@ def fechar_db(_erro=None):
 
 # ---------- Preparação ----------
 
-def criar_tabelas(db):
+def _tem_coluna(db, tabela, coluna):
     if db.postgres:
-        if db.execute("SELECT to_regclass('versoes')").fetchone()[0] is None:
-            sql = SCHEMA.replace("id INTEGER PRIMARY KEY", "id SERIAL PRIMARY KEY").replace("BLOB", "BYTEA")
-            with db:
-                # Duas instâncias podem acordar ao mesmo tempo; a trava evita criarem as tabelas em paralelo.
-                db.execute("SELECT pg_advisory_xact_lock(741201)")
-                for comando in sql.split(";"):
-                    db.execute(comando)
-    else:
-        db.con.executescript(SCHEMA)
+        return bool(db.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_name = ? AND column_name = ?", (tabela, coluna)
+        ).fetchone())
+    return any(linha["name"] == coluna for linha in db.execute(f"PRAGMA table_info({tabela})"))
+
+
+def criar_tabelas(db):
+    """Cria o que falta e aplica mudanças de esquema. Com o banco em dia, custa uma única consulta."""
+    try:
+        gravado = db.execute("SELECT valor FROM config WHERE chave = 'esquema'").fetchone()
+    except Exception:  # a tabela config ainda não existe
+        gravado = None
+    if gravado and gravado[0] == ESQUEMA:
+        return
+    sql = SCHEMA
+    if db.postgres:
+        sql = sql.replace("id INTEGER PRIMARY KEY", "id SERIAL PRIMARY KEY").replace("BLOB", "BYTEA")
     with db:
+        if db.postgres:
+            # Duas instâncias podem acordar ao mesmo tempo; a trava evita prepararem o banco em paralelo.
+            db.execute("SELECT pg_advisory_xact_lock(741201)")
+        for comando in sql.split(";"):
+            db.execute(comando)
+        if not _tem_coluna(db, "usuarios", "trocar_senha"):
+            # Bancos criados antes desta coluna: todos renovam a senha no próximo acesso.
+            db.execute("ALTER TABLE usuarios ADD COLUMN trocar_senha INTEGER NOT NULL DEFAULT 0")
+            db.execute("UPDATE usuarios SET trocar_senha = 1")
+        if not _tem_coluna(db, "usuarios", "excluido_em"):
+            db.execute("ALTER TABLE usuarios ADD COLUMN excluido_em TEXT")
         for topico in TOPICOS:
             db.execute("INSERT INTO versoes (topico) VALUES (?) ON CONFLICT DO NOTHING", (topico,))
+        db.execute(
+            "INSERT INTO config (chave, valor) VALUES ('esquema', ?) "
+            "ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor",
+            (ESQUEMA,),
+        )
 
 
 def chave_secreta(db):
@@ -307,7 +342,7 @@ def chave_secreta(db):
 
 def apagar_tudo(db):
     tabelas = ("pagamentos", "pedido_itens", "pedidos", "comandas", "produtos", "categorias", "bordas", "mesas",
-               "usuarios", "imagens", "versoes", "config")
+               "usuarios", "imagens", "versoes", "tentativas_login", "config")
     with db:
         for tabela in tabelas:
             db.execute(f"DROP TABLE IF EXISTS {tabela}")

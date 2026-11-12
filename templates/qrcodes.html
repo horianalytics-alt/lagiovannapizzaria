@@ -11,7 +11,7 @@
 <header class="qr-topo nao-imprimir">
   <a class="botao botao-fantasma" href="/admin#mesas">Voltar</a>
   <p>Uma plaquinha por mesa. Recorte nas linhas e coloque em cada mesa.</p>
-  <button class="botao botao-primario" onclick="window.print()">Imprimir</button>
+  <button class="botao botao-primario" id="imprimir">Imprimir</button>
 </header>
 <main class="qr-folha">
   {% for m in mesas %}
@@ -30,5 +30,6 @@
   <p>Nenhuma mesa cadastrada.</p>
   {% endfor %}
 </main>
+<script src="/static/js/imprimir.js?v={{ versao }}"></script>
 </body>
 </html>

@@ -7,6 +7,7 @@ import {
 const USUARIO = window.DADOS.usuario;
 const SECOES = [
   ['resumo', 'Resumo'], ['caixa', 'Caixa'], ['cardapio', 'Cardápio'], ['mesas', 'Mesas e QR Codes'], ['equipe', 'Equipe'],
+  ['privacidade', 'Privacidade'],
 ];
 const TIPO_CATEGORIA = { pizza: 'Pizza (meio a meio e borda)', bebida: 'Bebida', outro: 'Outros' };
 const PERFIL = { admin: 'Gerente', garcom: 'Garçom', cozinha: 'Cozinha' };
@@ -140,8 +141,8 @@ function Resumo() {
           itens=${dados.pagamentos.filter((p) => p.valor > 0).sort((a, b) => b.valor - a.valor)
             .map((p) => ({ rotulo: ROTULO_PAGAMENTO[p.forma], valor: p.valor }))} />
       </div>
-      <p class="zerar">Os números acima incluem as vendas de demonstração que vieram com o sistema.
-        <button class="link" onClick=${zerar}>Zerar as vendas para começar de verdade</button></p>`}
+      <p class="zerar">Fez testes e quer recomeçar do zero?${' '}
+        <button class="link" onClick=${zerar}>Zerar todas as vendas</button></p>`}
   </div>`;
 }
 
@@ -598,9 +599,10 @@ function FormularioPessoa({ pessoa, aoSalvar, aoFechar }) {
       <select id="u-perfil" class="campo" value=${f.perfil} onChange=${campo('perfil')}>
         ${Object.entries(PERFIL).map(([valor, rotulo]) => html`<option key=${valor} value=${valor}>${rotulo}</option>`)}
       </select>
-      <label class="rotulo" for="u-senha">${pessoa ? 'Nova senha (deixe em branco para manter)' : 'Senha'}</label>
-      <input id="u-senha" class="campo" type="password" value=${f.senha} onInput=${campo('senha')} minlength="6"
+      <label class="rotulo" for="u-senha">${pessoa ? 'Senha provisória nova (deixe em branco para manter)' : 'Senha provisória (8 caracteres ou mais)'}</label>
+      <input id="u-senha" class="campo" type="password" value=${f.senha} onInput=${campo('senha')} minlength="8"
         required=${!pessoa} autocomplete="new-password" />
+      <p class="grupo-nota">A pessoa cria a própria senha no primeiro acesso.</p>
       ${pessoa && html`<label class="marcar"><input type="checkbox" checked=${!!f.ativo} onChange=${(e) => setF({ ...f, ativo: e.target.checked })} />
         Pode entrar no sistema</label>`}
       <button class="botao botao-primario botao-largo">Salvar</button>
@@ -612,6 +614,10 @@ function Equipe() {
   const { dados, erro, recarregar } = useDados('/api/admin/usuarios');
   const [editando, setEditando] = useState(null);
   if (!dados) return html`<div class="secao"><p class="carregando">${erro || 'Carregando a equipe…'}</p></div>`;
+  const excluir = async (u) => {
+    if (!confirm(`Excluir ${u.nome} da equipe?\n\nO nome e o usuário são apagados e o acesso é encerrado. As vendas que essa pessoa registrou continuam, sem o nome.`)) return;
+    if (await executar(() => api(`/api/admin/usuarios/${u.id}`, { metodo: 'DELETE' }), `${u.nome} excluído da equipe`)) recarregar();
+  };
   return html`<div class="secao">
     <header class="secao-topo">
       <h1>Equipe</h1>
@@ -621,9 +627,11 @@ function Equipe() {
       <thead><tr><th>Nome</th><th>Usuário</th><th>Função</th><th>Acesso</th><th></th></tr></thead>
       <tbody>${dados.map((u) => html`<tr key=${u.id} class=${u.ativo ? '' : 'pausado'}>
         <td><strong>${u.nome}</strong></td><td>${u.usuario}</td><td>${PERFIL[u.perfil]}</td>
-        <td>${u.ativo ? 'Liberado' : 'Bloqueado'}</td>
+        <td>${!u.ativo ? 'Bloqueado' : u.trocar_senha ? 'Senha provisória' : 'Liberado'}</td>
         <td class="acoes"><button class="botao-icone" aria-label="Editar ${u.nome}" title="Editar"
-          onClick=${() => setEditando({ pessoa: u })}><${Icone} nome="lapis" tamanho=${18} /></button></td>
+          onClick=${() => setEditando({ pessoa: u })}><${Icone} nome="lapis" tamanho=${18} /></button>
+          <button class="botao-icone botao-perigo" aria-label="Excluir ${u.nome}" title="Excluir"
+            onClick=${() => excluir(u)}><${Icone} nome="lixeira" tamanho=${18} /></button></td>
       </tr>`)}</tbody>
     </table></div></section>
     ${editando && html`<${FormularioPessoa} pessoa=${editando.pessoa} aoSalvar=${() => { setEditando(null); recarregar(); }}
@@ -631,9 +639,54 @@ function Equipe() {
   </div>`;
 }
 
+// ---------- Privacidade (LGPD) ----------
+
+function Privacidade() {
+  const { dados, erro, recarregar } = useDados('/api/admin/privacidade');
+  const [f, setF] = useState(null);
+  useEffect(() => { if (dados && !f) setF(dados); }, [dados]);
+  if (!f) return html`<div class="secao"><p class="carregando">${erro || 'Carregando…'}</p></div>`;
+  const campo = (nome) => (e) => setF({ ...f, [nome]: e.target.value });
+  const salvar = async (e) => {
+    e.preventDefault();
+    if (await executar(() => api('/api/admin/privacidade', { metodo: 'PUT', corpo: f }), 'Aviso de privacidade atualizado')) recarregar();
+  };
+  return html`<div class="secao">
+    <header class="secao-topo">
+      <h1>Privacidade</h1>
+      <a class="botao botao-contorno" href="/privacidade" target="_blank" rel="noopener">Ver o aviso publicado</a>
+    </header>
+    <section class="painel">
+      <header class="painel-topo"><h2>Dados da empresa no aviso de privacidade</h2></header>
+      <form class="formulario formulario-privacidade" onSubmit=${salvar}>
+        <label class="rotulo" for="e-nome">Razão social ou nome da empresa</label>
+        <input id="e-nome" class="campo" value=${f.empresa_nome} onInput=${campo('empresa_nome')} maxlength="120"
+          placeholder="La Giovanna Pizzaria e Cafeteria Ltda." />
+        <label class="rotulo" for="e-cnpj">CNPJ</label>
+        <input id="e-cnpj" class="campo" value=${f.empresa_cnpj} onInput=${campo('empresa_cnpj')} maxlength="20"
+          placeholder="00.000.000/0001-00" />
+        <label class="rotulo" for="e-contato">Contato para assuntos de privacidade</label>
+        <input id="e-contato" class="campo" value=${f.empresa_contato} onInput=${campo('empresa_contato')} maxlength="160"
+          placeholder="privacidade@lagiovanna.com.br ou (00) 00000-0000" />
+        <p class="grupo-nota">Esse contato aparece no aviso para clientes e equipe pedirem acesso, correção ou exclusão de dados.</p>
+        <button class="botao botao-primario">Salvar</button>
+      </form>
+    </section>
+    <section class="painel">
+      <header class="painel-topo"><h2>O que o sistema já faz</h2></header>
+      <ul class="lista-lgpd">
+        <li>Não pede nome, telefone, e-mail ou CPF do cliente, e não usa cookies de rastreamento.</li>
+        <li>Apaga as observações dos pedidos 30 dias depois do fechamento da conta.</li>
+        <li>Guarda as senhas da equipe cifradas e exige senha individual, criada pela própria pessoa.</li>
+        <li>Em Equipe, o botão Excluir apaga o nome e o usuário de quem saiu, mantendo só o histórico de vendas.</li>
+      </ul>
+    </section>
+  </div>`;
+}
+
 // ---------- Moldura ----------
 
-const TELAS = { resumo: Resumo, caixa: Caixa, cardapio: CardapioAdmin, mesas: Mesas, equipe: Equipe };
+const TELAS = { resumo: Resumo, caixa: Caixa, cardapio: CardapioAdmin, mesas: Mesas, equipe: Equipe, privacidade: Privacidade };
 
 function Admin() {
   const lerHash = () => (TELAS[location.hash.slice(1)] ? location.hash.slice(1) : 'resumo');
@@ -665,6 +718,7 @@ function Admin() {
       <div class="admin-atalhos">
         <a href="/garcom">Tela do garçom</a>
         <a href="/cozinha">Tela da cozinha</a>
+        <a href="/trocar-senha">Trocar minha senha</a>
       </div>
       <div class="admin-usuario">
         <span>${USUARIO.nome}</span>

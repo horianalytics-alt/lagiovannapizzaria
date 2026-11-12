@@ -12,9 +12,9 @@ function Entrar() {
     setErro('');
     try {
       const dados = await api('/api/login', { metodo: 'POST', corpo: { usuario, senha } });
-      const proximo = new URLSearchParams(location.search).get('proximo');
-      const permitido = proximo && proximo.startsWith('/') && !proximo.startsWith('//');
-      location.href = permitido && dados.perfil === 'admin' ? proximo : dados.inicio;
+      const proximo = new URLSearchParams(location.search).get('proximo') || '';
+      const interno = /^\/[a-z0-9/_-]{0,80}$/.test(proximo);
+      location.href = dados.trocar_senha ? '/trocar-senha' : interno ? proximo : dados.inicio;
     } catch (e) {
       setErro(e.message);
       setEnviando(false);
@@ -35,6 +35,7 @@ function Entrar() {
       ${erro && html`<p class="aviso" role="alert">${erro}</p>`}
       <button class="botao botao-primario botao-largo" disabled=${enviando}>${enviando ? 'Entrando…' : 'Entrar'}</button>
       <p class="porta-equipe">É cliente? <a href="/">Abrir o cardápio da mesa</a></p>
+      <p class="porta-equipe"><a href="/privacidade">Aviso de privacidade</a></p>
     </form>
   </main>`;
 }

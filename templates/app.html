@@ -13,7 +13,7 @@
 <body class="pagina-{{ modulo }}">
 <div id="app"><p class="carregando">Abrindo…</p></div>
 <noscript><p class="carregando">Ative o JavaScript do navegador para usar o sistema.</p></noscript>
-<script>window.DADOS = {{ dados|default({})|tojson }};</script>
+<script type="application/json" id="dados">{{ dados|default({})|tojson }}</script>
 <script type="module" src="/static/js/{{ modulo }}.js?v={{ versao }}"></script>
 </body>
 </html>

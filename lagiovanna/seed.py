@@ -69,7 +69,7 @@ TOTAL_MESAS = 12
 OBSERVACOES = ["Sem cebola", "Bem assada", "Sem azeitona", "Cortar em 12 fatias", "Pouco orégano"]
 
 
-def popular_se_vazio(con, semente=7):
+def popular_se_vazio(con, semente=7, com_movimento=True):
     if con.execute("SELECT COUNT(*) FROM usuarios").fetchone()[0]:
         return False
     sorteio = random.Random(semente)
@@ -80,7 +80,8 @@ def popular_se_vazio(con, semente=7):
             if con.execute("SELECT COUNT(*) FROM usuarios").fetchone()[0]:
                 return False
         con.executemany(
-            "INSERT INTO usuarios (nome, usuario, senha_hash, perfil) VALUES (?, ?, ?, ?)",
+            # As senhas iniciais são conhecidas (estão no README); por isso nascem provisórias.
+            "INSERT INTO usuarios (nome, usuario, senha_hash, perfil, trocar_senha) VALUES (?, ?, ?, ?, 1)",
             [(nome, usuario, generate_password_hash(senha), perfil) for nome, usuario, senha, perfil in USUARIOS],
         )
         pizzas, bebidas, outros = [], [], []
@@ -99,7 +100,8 @@ def popular_se_vazio(con, semente=7):
             for nome, preco in BORDAS
         ]
         con.executemany("INSERT INTO mesas (numero) VALUES (?)", [(n,) for n in range(1, TOTAL_MESAS + 1)])
-        _movimento(con, sorteio, pizzas, bebidas, outros, bordas)
+        if com_movimento:
+            _movimento(con, sorteio, pizzas, bebidas, outros, bordas)
     return True
 
 
