@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="pt-BR" data-tema="claro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QR Codes das mesas | La Giovanna</title>
+<link rel="icon" href="/static/img/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/css/app.css?v={{ versao }}">
+</head>
+<body class="pagina-qrcodes">
+<header class="qr-topo nao-imprimir">
+  <a class="botao botao-fantasma" href="/admin#mesas">Voltar</a>
+  <p>Uma plaquinha por mesa. Recorte nas linhas e coloque em cada mesa.</p>
+  <button class="botao botao-primario" onclick="window.print()">Imprimir</button>
+</header>
+<main class="qr-folha">
+  {% for m in mesas %}
+  <section class="qr-placa">
+    <div class="bandeira" aria-hidden="true"></div>
+    <div class="letreiro">
+      <span class="letreiro-sub">Pizzaria e Cafeteria</span>
+      <span class="letreiro-nome">La Giovanna</span>
+    </div>
+    <div class="qr-codigo">{{ m.svg|safe }}</div>
+    <p class="qr-mesa">Mesa {{ '%02d' % m.numero }}</p>
+    <p class="qr-dica">Aponte a câmera do celular para ver o cardápio e pedir.</p>
+    <p class="qr-link">{{ m.link }}</p>
+  </section>
+  {% else %}
+  <p>Nenhuma mesa cadastrada.</p>
+  {% endfor %}
+</main>
+</body>
+</html>

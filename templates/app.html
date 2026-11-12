@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="pt-BR" data-tema="{{ tema }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="{{ '#1c1210' if tema == 'escuro' else '#b51c1b' }}">
+<title>{{ titulo }} | La Giovanna</title>
+<link rel="icon" href="/static/img/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="/static/fonts/caprasimo-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/figtree-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/css/app.css?v={{ versao }}">
+</head>
+<body class="pagina-{{ modulo }}">
+<div id="app"><p class="carregando">Abrindo…</p></div>
+<noscript><p class="carregando">Ative o JavaScript do navegador para usar o sistema.</p></noscript>
+<script>window.DADOS = {{ dados|default({})|tojson }};</script>
+<script type="module" src="/static/js/{{ modulo }}.js?v={{ versao }}"></script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="pt-BR" data-tema="claro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#b51c1b">
+<title>La Giovanna | Pizzaria e Cafeteria</title>
+<link rel="icon" href="/static/img/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/css/app.css?v={{ versao }}">
+</head>
+<body class="pagina-inicio">
+<main class="porta azulejo">
+  <div class="porta-placa">
+    <div class="bandeira" aria-hidden="true"></div>
+    <h1 class="letreiro letreiro-grande">
+      <span class="letreiro-sub">Pizzaria e Cafeteria</span>
+      <span class="letreiro-nome">La Giovanna</span>
+    </h1>
+    {% if aviso %}<p class="aviso" role="alert">{{ aviso }}</p>{% endif %}
+    <form class="porta-form" onsubmit="event.preventDefault(); var n = parseInt(this.mesa.value, 10); if (n > 0) location.href = '/mesa/' + String(n).padStart(2, '0');">
+      <label for="mesa">Está na pizzaria? Digite o número da sua mesa para ver o cardápio.</label>
+      <div class="porta-linha">
+        <input id="mesa" name="mesa" class="campo" inputmode="numeric" pattern="[0-9]*" maxlength="3" placeholder="Nº da mesa" required autocomplete="off">
+        <button class="botao botao-primario" type="submit">Abrir cardápio</button>
+      </div>
+    </form>
+    <p class="porta-equipe">Trabalha aqui? <a href="/entrar">Entrar como equipe</a></p>
+  </div>
+</main>
+</body>
+</html>
