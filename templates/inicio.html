@@ -18,10 +18,10 @@
     </h1>
     {% if aviso %}<p class="aviso" role="alert">{{ aviso }}</p>{% endif %}
     <form class="porta-form" action="/mesa" method="get">
-      <label for="mesa">Está na pizzaria? Digite o número da sua mesa para ver o cardápio.</label>
+      <label for="mesa">Para pedir, aponte a câmera do celular para o QR Code da sua mesa. Só quer ver o cardápio? Digite o número da mesa.</label>
       <div class="porta-linha">
         <input id="mesa" name="n" class="campo" inputmode="numeric" pattern="[0-9]*" maxlength="3" placeholder="Nº da mesa" required autocomplete="off">
-        <button class="botao botao-primario" type="submit">Abrir cardápio</button>
+        <button class="botao botao-primario" type="submit">Ver cardápio</button>
       </div>
     </form>
     <p class="porta-equipe">Trabalha aqui? <a href="/entrar">Entrar como equipe</a></p>

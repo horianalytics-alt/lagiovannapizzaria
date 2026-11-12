@@ -681,3 +681,9 @@ a.barra-usuario { text-decoration: underline; text-underline-offset: 3px; }
 .formulario-privacidade { max-width: 560px; }
 .lista-lgpd { list-style: disc; padding-left: 22px; max-width: 70ch; }
 .lista-lgpd li { margin-top: 8px; }
+
+.aviso-qr {
+  max-width: 760px; margin: 0 auto; padding: 14px 16px; background: #fff4d0; color: #5a4200;
+  border-bottom: 2px solid var(--amarelo); font-weight: 700; text-align: center;
+}
+.pagina-cliente:has(.aviso-qr) { padding-bottom: 24px; }

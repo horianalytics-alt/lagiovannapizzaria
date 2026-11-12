@@ -1,6 +1,8 @@
 import os
+import re
 
 import pytest
+from flask.testing import FlaskClient
 
 from lagiovanna import create_app
 from lagiovanna.db import abrir, apagar_tudo
@@ -15,7 +17,28 @@ def app(tmp_path):
         apagar_tudo(db)
     app = create_app(tmp_path, url_banco=url)
     app.config["TESTING"] = True
+    app.test_client_class = ClienteComCodigo
     return app
+
+
+def codigo_da_mesa(app, numero):
+    with app.app_context():
+        from lagiovanna.db import get_db
+
+        return get_db().execute("SELECT codigo FROM mesas WHERE numero = ?", (numero,)).fetchone()[0]
+
+
+class ClienteComCodigo(FlaskClient):
+    """Como o celular que leu o QR Code: manda o código da mesa nas rotas do cliente, salvo se o teste der outro."""
+
+    def open(self, *args, **kwargs):
+        caminho = args[0] if args and isinstance(args[0], str) else kwargs.get("path", "")
+        achou = re.match(r"/api/mesa/(\d+)", caminho)
+        if achou:
+            cabecalhos = dict(kwargs.pop("headers", None) or {})
+            cabecalhos.setdefault("X-Codigo-Mesa", codigo_da_mesa(self.application, int(achou.group(1))))
+            kwargs["headers"] = cabecalhos
+        return super().open(*args, **kwargs)
 
 
 def entrar(app, usuario, senha):
@@ -176,7 +199,7 @@ def test_mesas_qrcode_e_equipe(app):
     assert admin.put("/api/admin/config/url_base", json={"url_base": "http://192.168.0.10:5000/"}).status_code == 200
     dados = admin.get("/api/admin/mesas").json
     mesa20 = next(m for m in dados["mesas"] if m["numero"] == 20)
-    assert mesa20["link"] == "http://192.168.0.10:5000/mesa/20"
+    assert mesa20["link"] == f"http://192.168.0.10:5000/mesa/20?c={mesa20['codigo']}"
     svg = admin.get(f"/api/admin/mesas/{mesa20['id']}/qr.svg")
     assert svg.status_code == 200 and b"<svg" in svg.data
     assert "Mesa 20" in admin.get("/admin/qrcodes").get_data(as_text=True)
@@ -308,3 +331,42 @@ def test_privacidade_aviso_e_exclusao_de_integrante(app):
     assert pedido["atendente"] == "Ex-integrante da equipe"
     eu = admin.get("/api/eu").json
     assert admin.delete(f"/api/admin/usuarios/{eu['id']}").status_code == 409
+
+
+def test_codigo_da_mesa_protege_pedidos_e_pode_ser_trocado(app):
+    publico = app.test_client()
+    admin = entrar(app, "admin", "giovanna123")
+    item = {"itens": [{"produto_id": 1, "quantidade": 1}]}
+    codigo = codigo_da_mesa(app, 4)
+    assert re.fullmatch(r"[A-Z2-9]{10}", codigo) and codigo != codigo_da_mesa(app, 5)
+
+    # Sem código, com código errado ou com o de outra mesa: nada de pedido, chamado ou consumo da mesa.
+    for errado in ("", "ERRADO1234", codigo_da_mesa(app, 5)):
+        h = {"X-Codigo-Mesa": errado}
+        assert publico.post("/api/mesa/4/pedidos", json=item, headers=h).status_code == 403
+        assert publico.post("/api/mesa/4/chamar", json={"tipo": "garcom"}, headers=h).status_code == 403
+        assert publico.get("/api/mesa/4", headers=h).status_code == 403
+    assert publico.post("/api/mesa/4/pedidos", json=item, headers={"X-Codigo-Mesa": codigo.lower()}).status_code == 201
+
+    # A página aberta só com o número mostra o cardápio, sem poder pedir.
+    assert '"codigo": null' in publico.get("/mesa/04").get_data(as_text=True)
+    assert f'"codigo": "{codigo}"' in publico.get(f"/mesa/04?c={codigo}").get_data(as_text=True)
+    assert '"codigo_invalido": true' in publico.get("/mesa/04?c=VELHO12345").get_data(as_text=True)
+
+    # Trocar o código invalida o QR Code antigo.
+    mesa4 = next(m for m in admin.get("/api/admin/mesas").json["mesas"] if m["numero"] == 4)
+    assert mesa4["link"].endswith(f"/mesa/04?c={codigo}")
+    assert admin.post(f"/api/admin/mesas/{mesa4['id']}/novo-codigo").status_code == 200
+    novo = codigo_da_mesa(app, 4)
+    assert novo != codigo
+    assert publico.post("/api/mesa/4/pedidos", json=item, headers={"X-Codigo-Mesa": codigo}).status_code == 403
+    assert publico.post("/api/mesa/4/pedidos", json=item, headers={"X-Codigo-Mesa": novo}).status_code == 201
+    novo_link = next(m for m in admin.get("/api/admin/mesas").json["mesas"] if m["numero"] == 4)["link"]
+    assert novo_link.endswith(f"?c={novo}")
+    impressao = admin.get("/admin/qrcodes").get_data(as_text=True)
+    assert novo not in impressao and "<svg" in impressao  # o código fica só dentro do QR, não escrito na placa
+
+    # O código não vaza para quem não é gerente.
+    garcom = entrar(app, "garcom", "garcom123")
+    assert novo not in garcom.get("/api/mesas").get_data(as_text=True)
+    assert garcom.post(f"/api/admin/mesas/{mesa4['id']}/novo-codigo").status_code == 403

@@ -1,4 +1,5 @@
 """Páginas e API usadas por cliente, garçom e cozinha."""
+import hmac
 from datetime import timedelta
 
 from flask import Blueprint, Response, abort, g, jsonify, redirect, render_template, request, session
@@ -62,10 +63,13 @@ def sair():
 
 @paginas.get("/mesa/<int:numero>")
 def mesa(numero):
-    existe = get_db().execute("SELECT 1 FROM mesas WHERE numero = ? AND ativo = 1", (numero,)).fetchone()
-    if not existe:
+    mesa = get_db().execute("SELECT codigo FROM mesas WHERE numero = ? AND ativo = 1", (numero,)).fetchone()
+    if not mesa:
         return render_template("inicio.html", aviso=f"A mesa {numero:02d} não existe. Confira o número na sua mesa."), 404
-    return render_template("app.html", modulo="cliente", titulo=f"Mesa {numero:02d}", tema="claro", dados={"mesa": numero})
+    codigo = request.args.get("c", "").strip().upper()
+    valido = bool(codigo and mesa["codigo"] and hmac.compare_digest(codigo, mesa["codigo"]))
+    dados = {"mesa": numero, "codigo": codigo if valido else None, "codigo_invalido": bool(codigo) and not valido}
+    return render_template("app.html", modulo="cliente", titulo=f"Mesa {numero:02d}", tema="claro", dados=dados)
 
 
 @paginas.get("/garcom")
@@ -95,6 +99,10 @@ def upload(nome):
     # O nome é único por arquivo, então navegador e CDN podem guardar para sempre.
     resposta.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return resposta
+
+
+def _codigo():
+    return request.headers.get("X-Codigo-Mesa", "").strip()
 
 
 def _dados_usuario():
@@ -144,14 +152,14 @@ def versao():
 @api.get("/mesa/<int:numero>")
 def mesa_cliente(numero):
     db = get_db()
-    return jsonify(servicos.situacao_mesa(db, servicos.mesa_por_numero(db, numero)))
+    return jsonify(servicos.situacao_mesa(db, servicos.mesa_autorizada(db, numero, _codigo())))
 
 
 @api.post("/mesa/<int:numero>/pedidos")
 def pedido_cliente(numero):
     db = get_db()
     dados = request.get_json(silent=True) or {}
-    mesa = servicos.mesa_por_numero(db, numero)
+    mesa = servicos.mesa_autorizada(db, numero, _codigo())
     # Esta rota é aberta; o limite impede que alguém de fora encha a cozinha de pedidos falsos.
     desde = (agora_dt() - timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
     recentes = db.execute(
@@ -170,7 +178,7 @@ def chamar(numero):
     tipo = (request.get_json(silent=True) or {}).get("tipo")
     if tipo not in ("garcom", "conta"):
         raise servicos.Erro("Chamado inválido.")
-    mesa = servicos.mesa_por_numero(db, numero)
+    mesa = servicos.mesa_autorizada(db, numero, _codigo())
     if mesa["chamado"] != tipo:  # repetir o mesmo chamado não gera novo aviso
         with db:
             db.execute("UPDATE mesas SET chamado = ?, chamado_em = ? WHERE id = ?", (tipo, agora(), mesa["id"]))

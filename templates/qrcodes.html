@@ -24,7 +24,7 @@
     <div class="qr-codigo">{{ m.svg|safe }}</div>
     <p class="qr-mesa">Mesa {{ '%02d' % m.numero }}</p>
     <p class="qr-dica">Aponte a câmera do celular para ver o cardápio e pedir.</p>
-    <p class="qr-link">{{ m.link }}</p>
+    <p class="qr-link">{{ m.link.split('?')[0] }}</p>
   </section>
   {% else %}
   <p>Nenhuma mesa cadastrada.</p>

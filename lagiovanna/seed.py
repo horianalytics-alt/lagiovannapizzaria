@@ -4,7 +4,7 @@ from datetime import timedelta
 
 from werkzeug.security import generate_password_hash
 
-from .db import agora_dt
+from .db import agora_dt, codigo_de_mesa
 
 USUARIOS = [
     ("Giovanna (gerente)", "admin", "giovanna123", "admin"),
@@ -99,7 +99,9 @@ def popular_se_vazio(con, semente=7, com_movimento=True):
             (con.inserir("INSERT INTO bordas (nome, preco) VALUES (?, ?)", (nome, preco)), nome, preco)
             for nome, preco in BORDAS
         ]
-        con.executemany("INSERT INTO mesas (numero) VALUES (?)", [(n,) for n in range(1, TOTAL_MESAS + 1)])
+        con.executemany(
+            "INSERT INTO mesas (numero, codigo) VALUES (?, ?)", [(n, codigo_de_mesa()) for n in range(1, TOTAL_MESAS + 1)]
+        )
         if com_movimento:
             _movimento(con, sorteio, pizzas, bebidas, outros, bordas)
     return True

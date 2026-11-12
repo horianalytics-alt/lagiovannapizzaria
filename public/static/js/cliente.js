@@ -1,9 +1,11 @@
 import {
-  html, useState, api, avisar, iniciar, useDados, useCarrinho, reais, mesa2, hora,
+  html, useState, useEffect, useCallback, api, avisar, iniciar, useDados, useEventos, useCarrinho, reais, mesa2, hora,
   Cardapio, FolhaCarrinho, Folha, ItensPedido, Letreiro, Icone,
 } from './lib.js';
 
-const MESA = window.DADOS.mesa;
+const { mesa: MESA, codigo: CODIGO, codigo_invalido: CODIGO_INVALIDO } = window.DADOS;
+// O código secreto do QR Code autoriza pedir em nome da mesa; sem ele a página só mostra o cardápio.
+const DA_MESA = { 'X-Codigo-Mesa': CODIGO || '' };
 const ETAPAS = ['pendente', 'preparo', 'pronto', 'entregue'];
 const NOME_ETAPA = { pendente: 'Recebido', preparo: 'No forno', pronto: 'Pronto', entregue: 'Na mesa' };
 
@@ -24,7 +26,7 @@ function MeusPedidos({ mesa, aoFechar, recarregar }) {
   const chamar = async (tipo) => {
     setChamando(true);
     try {
-      await api(`/api/mesa/${MESA}/chamar`, { metodo: 'POST', corpo: { tipo } });
+      await api(`/api/mesa/${MESA}/chamar`, { metodo: 'POST', corpo: { tipo }, cabecalhos: DA_MESA });
       await recarregar();
       avisar(tipo === 'conta' ? 'Conta pedida. Já levamos até você.' : 'Garçom chamado. Ele já vem.');
     } catch (e) { avisar(e.message, 'erro'); }
@@ -51,9 +53,32 @@ function MeusPedidos({ mesa, aoFechar, recarregar }) {
   <//>`;
 }
 
+function SoCardapio() {
+  const cardapio = useDados('/api/cardapio', ['cardapio']);
+  return html`<div class="cliente">
+    <header class="cliente-topo azulejo">
+      <div class="bandeira" aria-hidden="true"></div>
+      <div class="cliente-topo-linha">
+        <${Letreiro} classe="letreiro-placa" />
+        <p class="mesa-prato" aria-label="Mesa ${mesa2(MESA)}"><span>Mesa</span><strong>${mesa2(MESA)}</strong></p>
+      </div>
+    </header>
+    <p class="aviso-qr" role="status">
+      ${CODIGO_INVALIDO
+        ? 'Este QR Code não vale mais. Peça ao garçom o QR Code atual da mesa para fazer o pedido.'
+        : 'Para fazer o pedido, aponte a câmera do celular para o QR Code que está na sua mesa.'}
+    </p>
+    <main class="cliente-corpo">
+      ${!cardapio.dados && html`<p class="carregando">${cardapio.erro || 'Abrindo o cardápio…'}</p>`}
+      ${cardapio.dados && html`<${Cardapio} cardapio=${cardapio.dados} carrinho=${null} leitura=${true} />`}
+      <p class="rodape-privacidade"><a href="/privacidade">Aviso de privacidade</a></p>
+    </main>
+  </div>`;
+}
+
 function Cliente() {
   const cardapio = useDados('/api/cardapio', ['cardapio']);
-  const mesa = useDados(`/api/mesa/${MESA}`, ['pedidos', 'mesas']);
+  const mesa = useDadosDaMesa();
   const carrinho = useCarrinho(`lagiovanna-carrinho-mesa-${MESA}`);
   const [folha, setFolha] = useState(null);
   const [enviando, setEnviando] = useState(false);
@@ -61,7 +86,7 @@ function Cliente() {
   const enviar = async () => {
     setEnviando(true);
     try {
-      await api(`/api/mesa/${MESA}/pedidos`, { metodo: 'POST', corpo: { itens: carrinho.paraEnvio() } });
+      await api(`/api/mesa/${MESA}/pedidos`, { metodo: 'POST', corpo: { itens: carrinho.paraEnvio() }, cabecalhos: DA_MESA });
       carrinho.limpar();
       await mesa.recarregar();
       setFolha('pedidos');
@@ -114,4 +139,14 @@ function Cliente() {
   </div>`;
 }
 
-iniciar(Cliente);
+function useDadosDaMesa() {
+  const [estado, setEstado] = useState({ dados: null });
+  const recarregar = useCallback(async () => {
+    try { setEstado({ dados: await api(`/api/mesa/${MESA}`, { cabecalhos: DA_MESA }) }); } catch { /* tenta de novo no próximo aviso */ }
+  }, []);
+  useEffect(() => { recarregar(); }, []);
+  useEventos(['pedidos', 'mesas'], recarregar);
+  return { ...estado, recarregar };
+}
+
+iniciar(CODIGO ? Cliente : SoCardapio);

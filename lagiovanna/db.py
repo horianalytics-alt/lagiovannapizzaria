@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS bordas (
 CREATE TABLE IF NOT EXISTS mesas (
     id INTEGER PRIMARY KEY,
     numero INTEGER NOT NULL UNIQUE,
+    codigo TEXT,
     ativo INTEGER NOT NULL DEFAULT 1,
     chamado TEXT CHECK (chamado IN ('garcom', 'conta')),
     chamado_em TEXT
@@ -129,7 +130,15 @@ CREATE INDEX IF NOT EXISTS ix_tentativas_chave ON tentativas_login(chave, moment
 """
 
 # Some quando o esquema acima mudar; o servidor só refaz a preparação quando o número gravado é outro.
-ESQUEMA = "2"
+ESQUEMA = "3"
+
+
+_LETRAS_DO_CODIGO = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # sem 0/O e 1/I, para não confundir
+
+
+def codigo_de_mesa():
+    """Código secreto que vai no QR Code de cada mesa; sem ele não dá para pedir em nome da mesa."""
+    return "".join(secrets.choice(_LETRAS_DO_CODIGO) for _ in range(10))
 
 
 def agora_dt():
@@ -319,6 +328,10 @@ def criar_tabelas(db):
             db.execute("UPDATE usuarios SET trocar_senha = 1")
         if not _tem_coluna(db, "usuarios", "excluido_em"):
             db.execute("ALTER TABLE usuarios ADD COLUMN excluido_em TEXT")
+        if not _tem_coluna(db, "mesas", "codigo"):
+            db.execute("ALTER TABLE mesas ADD COLUMN codigo TEXT")
+        for mesa in db.execute("SELECT id FROM mesas WHERE codigo IS NULL").fetchall():
+            db.execute("UPDATE mesas SET codigo = ? WHERE id = ?", (codigo_de_mesa(), mesa["id"]))
         for topico in TOPICOS:
             db.execute("INSERT INTO versoes (topico) VALUES (?) ON CONFLICT DO NOTHING", (topico,))
         db.execute(

@@ -11,7 +11,7 @@ from werkzeug.security import generate_password_hash
 
 from . import servicos
 from .auth import _marca_da_senha, exige, pagina_exige, validar_senha_nova
-from .db import agora, get_db
+from .db import agora, codigo_de_mesa, get_db
 from .eventos import publicar
 from .servicos import Erro
 
@@ -329,8 +329,8 @@ def endereco_base(db):
     return (linha["valor"] if linha else request.host_url).rstrip("/")
 
 
-def _link_mesa(base, numero):
-    return f"{base}/mesa/{numero:02d}"
+def _link_mesa(base, mesa):
+    return f"{base}/mesa/{mesa['numero']:02d}?c={mesa['codigo']}"
 
 
 @bp.get("/api/admin/mesas")
@@ -346,8 +346,8 @@ def mesas():
         url_base_definida=bool(salvo),
         sugestao_rede=f"http://{ip}{':' + porta if porta else ''}" if ip and not ip.startswith("127.") else None,
         mesas=[
-            dict(id=m["id"], numero=m["numero"], link=_link_mesa(base, m["numero"]))
-            for m in db.execute("SELECT id, numero FROM mesas WHERE ativo = 1 ORDER BY numero")
+            dict(id=m["id"], numero=m["numero"], codigo=m["codigo"], link=_link_mesa(base, m))
+            for m in db.execute("SELECT id, numero, codigo FROM mesas WHERE ativo = 1 ORDER BY numero")
         ],
     )
 
@@ -383,9 +383,12 @@ def criar_mesa():
         raise Erro(f"A mesa {numero:02d} já existe.", 409)
     with db:
         if existente:
-            db.execute("UPDATE mesas SET ativo = 1, chamado = NULL, chamado_em = NULL WHERE id = ?", (existente["id"],))
+            db.execute(
+                "UPDATE mesas SET ativo = 1, codigo = ?, chamado = NULL, chamado_em = NULL WHERE id = ?",
+                (codigo_de_mesa(), existente["id"]),
+            )
         else:
-            db.execute("INSERT INTO mesas (numero) VALUES (?)", (numero,))
+            db.execute("INSERT INTO mesas (numero, codigo) VALUES (?, ?)", (numero, codigo_de_mesa()))
     publicar("mesas")
     return jsonify(ok=True), 201
 
@@ -403,6 +406,17 @@ def excluir_mesa(mesa_id):
     return jsonify(ok=True)
 
 
+@bp.post("/api/admin/mesas/<int:mesa_id>/novo-codigo")
+@exige("admin")
+def novo_codigo(mesa_id):
+    """Troca o código secreto da mesa: o QR Code antigo para de aceitar pedidos."""
+    db = get_db()
+    servicos.mesa_por_id(db, mesa_id)
+    with db:
+        db.execute("UPDATE mesas SET codigo = ? WHERE id = ?", (codigo_de_mesa(), mesa_id))
+    return jsonify(ok=True)
+
+
 def _qr(link):
     return segno.make(link, error="m")
 
@@ -413,7 +427,7 @@ def qr_svg(mesa_id):
     db = get_db()
     mesa = servicos.mesa_por_id(db, mesa_id)
     saida = io.BytesIO()
-    _qr(_link_mesa(endereco_base(db), mesa["numero"])).save(saida, kind="svg", scale=10, border=2, dark="#2b1a17")
+    _qr(_link_mesa(endereco_base(db), mesa)).save(saida, kind="svg", scale=10, border=2, dark="#2b1a17")
     resposta = Response(saida.getvalue(), mimetype="image/svg+xml")
     resposta.headers["Cache-Control"] = "no-store"
     if request.args.get("baixar"):
@@ -429,10 +443,10 @@ def imprimir_qrcodes():
     mesas = [
         dict(
             numero=m["numero"],
-            link=_link_mesa(base, m["numero"]),
-            svg=_qr(_link_mesa(base, m["numero"])).svg_inline(scale=6, border=1, dark="#2b1a17"),
+            link=_link_mesa(base, m),
+            svg=_qr(_link_mesa(base, m)).svg_inline(scale=6, border=1, dark="#2b1a17"),
         )
-        for m in db.execute("SELECT numero FROM mesas WHERE ativo = 1 ORDER BY numero")
+        for m in db.execute("SELECT numero, codigo FROM mesas WHERE ativo = 1 ORDER BY numero")
     ]
     return render_template("qrcodes.html", mesas=mesas)
 

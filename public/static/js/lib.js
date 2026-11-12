@@ -38,8 +38,8 @@ export class ErroApi extends Error {
   constructor(mensagem, status) { super(mensagem); this.status = status; }
 }
 
-export async function api(caminho, { metodo = 'GET', corpo, form } = {}) {
-  const opcoes = { method: metodo, headers: {}, credentials: 'same-origin' };
+export async function api(caminho, { metodo = 'GET', corpo, form, cabecalhos = {} } = {}) {
+  const opcoes = { method: metodo, headers: { ...cabecalhos }, credentials: 'same-origin' };
   if (form) opcoes.body = form;
   else if (corpo !== undefined) {
     opcoes.headers['Content-Type'] = 'application/json';
@@ -282,7 +282,7 @@ export function useCarrinho(chave) {
 
 // ---------- Cardápio ----------
 
-export function Cardapio({ cardapio, carrinho, busca = false }) {
+export function Cardapio({ cardapio, carrinho, busca = false, leitura = false }) {
   const [montando, setMontando] = useState(null);
   const [termo, setTermo] = useState('');
   const [ativa, setAtiva] = useState(null);
@@ -329,11 +329,11 @@ export function Cardapio({ cardapio, carrinho, busca = false }) {
     ${categorias.map((c) => html`<section key=${c.id} class="secao-cardapio" data-categoria=${c.id}
         ref=${(el) => { secoes.current[c.id] = el; }}>
       <h2>${c.nome}</h2>
-      ${c.tipo === 'pizza' && html`<p class="secao-nota">Pizza grande, 8 fatias. Toque no sabor para escolher
-        meio a meio e borda recheada.</p>`}
+      ${c.tipo === 'pizza' && html`<p class="secao-nota">Pizza grande, 8 fatias.${leitura ? '' : ` Toque no sabor para escolher
+        meio a meio e borda recheada.`}</p>`}
       <ul class="produtos">
         ${c.produtos.map((p) => html`<${LinhaProduto} key=${p.id} produto=${p} pizza=${c.tipo === 'pizza'}
-          carrinho=${carrinho} aoMontar=${() => setMontando(p)} />`)}
+          carrinho=${carrinho} leitura=${leitura} aoMontar=${() => setMontando(p)} />`)}
       </ul>
     </section>`)}
 
@@ -343,8 +343,8 @@ export function Cardapio({ cardapio, carrinho, busca = false }) {
   </div>`;
 }
 
-function LinhaProduto({ produto, pizza, carrinho, aoMontar }) {
-  const noCarrinho = pizza ? 0 : carrinho.quantidadeDe(produto.id);
+function LinhaProduto({ produto, pizza, carrinho, aoMontar, leitura }) {
+  const noCarrinho = pizza || leitura ? 0 : carrinho.quantidadeDe(produto.id);
   const adicionar = () => carrinho.adicionar({
     produto_id: produto.id, nome: produto.nome, preco: produto.preco, quantidade: 1,
   });
@@ -358,17 +358,17 @@ function LinhaProduto({ produto, pizza, carrinho, aoMontar }) {
 
   return html`<li class="produto ${produto.imagem ? 'com-foto' : ''}">
     ${produto.imagem && html`<img class="produto-foto" src=${produto.imagem} alt="" loading="lazy" width="88" height="88" />`}
-    ${pizza
+    ${pizza && !leitura
       ? html`<button type="button" class="produto-texto produto-toque" onClick=${aoMontar}>${texto}</button>`
       : html`<div class="produto-texto">${texto}</div>`}
-    <div class="produto-acao">
+    ${!leitura && html`<div class="produto-acao">
       ${pizza && html`<button type="button" class="botao-mais" onClick=${aoMontar}
         aria-label="Montar pizza de ${produto.nome}"><${Icone} nome="mais" /></button>`}
       ${!pizza && noCarrinho === 0 && html`<button type="button" class="botao-mais" onClick=${adicionar}
         aria-label="Adicionar ${produto.nome}"><${Icone} nome="mais" /></button>`}
       ${!pizza && noCarrinho > 0 && html`<${Quantidade} valor=${noCarrinho} rotulo=${produto.nome}
         aoMudar=${(novo) => (novo > noCarrinho ? adicionar() : carrinho.tirarUmDe(produto.id))} />`}
-    </div>
+    </div>`}
   </li>`;
 }
 

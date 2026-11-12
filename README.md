@@ -125,6 +125,9 @@ O que o sistema faz:
 - **Permissões**: cada rota confere o perfil no servidor; preços e totais são calculados no servidor.
 - **Navegador**: Content-Security-Policy sem scripts embutidos, `Referrer-Policy`, `X-Frame-Options`,
   `nosniff`; nenhum recurso de terceiros (fontes e scripts são do próprio site).
+- **Código secreto por mesa**: o QR Code leva um código aleatório (`/mesa/05?c=...`). Sem ele, a página só
+  mostra o cardápio; pedir, chamar o garçom e ver o consumo da mesa exigem o código. Em **Mesas e QR Codes**,
+  "Trocar código" invalida um QR Code fotografado ou levado da mesa (é preciso imprimir o novo).
 - **Rotas abertas** (pedido pelo QR Code): limite de 10 pedidos por mesa a cada 10 minutos e de itens por pedido.
 - **Dados pessoais**: o cliente não informa nome, telefone, e-mail nem CPF; não há cookies de rastreamento;
   observações dos pedidos são apagadas 30 dias após o fechamento da conta; excluir alguém da equipe apaga
@@ -138,8 +141,8 @@ O que depende de quem opera (o sistema não resolve sozinho):
 - Vercel e Neon são operadores dos dados; com servidores fora do Brasil há transferência internacional
   (o aviso já informa). Criar o banco na região São Paulo reduz essa exposição.
 - Em caso de incidente com dados pessoais, a LGPD exige avaliar e comunicar à ANPD e aos titulares.
-- Qualquer pessoa com o endereço consegue abrir `/mesa/<número>` e pedir. O limite por mesa contém abusos,
-  mas não impede um pedido falso isolado; a equipe deve conferir pedidos estranhos.
+- Quem fotografar o QR Code de uma mesa consegue pedir por ela de fora até o código ser trocado. Se aparecer
+  pedido estranho, troque o código da mesa e reimprima.
 
 Testes:
 

@@ -526,6 +526,10 @@ function Mesas() {
     if (!confirm(`Excluir a mesa ${mesa2(m.numero)}? O QR Code dela deixa de funcionar.`)) return;
     if (await executar(() => api(`/api/admin/mesas/${m.id}`, { metodo: 'DELETE' }), `Mesa ${mesa2(m.numero)} excluída`)) recarregar();
   };
+  const trocarCodigo = async (m) => {
+    if (!confirm(`Trocar o código da mesa ${mesa2(m.numero)}?\n\nO QR Code impresso hoje para de aceitar pedidos e você precisa imprimir o novo. Use isto se o QR Code foi fotografado ou levado da mesa.`)) return;
+    if (await executar(() => api(`/api/admin/mesas/${m.id}/novo-codigo`, { metodo: 'POST' }), `Código da mesa ${mesa2(m.numero)} trocado. Imprima o QR Code novo.`)) recarregar();
+  };
   const copiar = async (link) => {
     try { await navigator.clipboard.writeText(link); avisar('Link copiado'); }
     catch { prompt('Copie o link da mesa:', link); }
@@ -560,13 +564,14 @@ function Mesas() {
     ${dados.mesas.length === 0 && html`<p class="vazio">Nenhuma mesa cadastrada. Adicione a primeira acima.</p>`}
     <ul class="placas">
       ${dados.mesas.map((m) => html`<li key=${m.id} class="placa">
-        <img src="/api/admin/mesas/${m.id}/qr.svg?e=${encodeURIComponent(dados.url_base)}" alt="QR Code da mesa ${mesa2(m.numero)}" width="150" height="150" loading="lazy" />
+        <img src="/api/admin/mesas/${m.id}/qr.svg?e=${encodeURIComponent(m.link)}" alt="QR Code da mesa ${mesa2(m.numero)}" width="150" height="150" loading="lazy" />
         <div class="placa-texto">
           <h2>Mesa ${mesa2(m.numero)}</h2>
-          <a href=${m.link} target="_blank" rel="noopener">${m.link.replace(/^https?:\/\//, '')}</a>
+          <a href=${m.link} target="_blank" rel="noopener">${m.link.replace(/^https?:\/\//, '').replace(/\?c=.*/, '')}</a>
           <div class="placa-acoes">
             <button class="botao botao-fantasma" onClick=${() => copiar(m.link)}><${Icone} nome="copiar" tamanho=${16} /> Copiar link</button>
             <a class="botao botao-fantasma" href="/api/admin/mesas/${m.id}/qr.svg?baixar=1">Baixar QR</a>
+            <button class="botao botao-fantasma" onClick=${() => trocarCodigo(m)}>Trocar código</button>
             <button class="botao botao-fantasma botao-perigo" onClick=${() => excluir(m)}>Excluir</button>
           </div>
         </div>

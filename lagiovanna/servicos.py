@@ -1,4 +1,5 @@
 """Regras de negócio: montagem de pedidos, comandas, fechamento de conta e indicadores."""
+import hmac
 from collections import defaultdict
 from datetime import date, timedelta
 
@@ -103,6 +104,14 @@ def montar_itens(db, itens_req):
             )
         )
     return itens
+
+
+def mesa_autorizada(db, numero, codigo):
+    """Mesa cujo código secreto (do QR Code) confere. Sem ele, o cliente só consegue ver o cardápio."""
+    mesa = mesa_por_numero(db, numero)
+    if not codigo or not mesa["codigo"] or not hmac.compare_digest(str(codigo).upper(), mesa["codigo"]):
+        raise Erro("Para pedir, aponte a câmera do celular para o QR Code que está na sua mesa.", 403)
+    return mesa
 
 
 def mesa_por_numero(db, numero):
